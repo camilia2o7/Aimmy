@@ -79,7 +79,9 @@ namespace Aimmy2.Class
             { "FOV Config", false },
             { "ESP Config", false },
             { "Settings Menu", false },
-            { "X/Y Percentage Adjustment", false }
+            { "X/Y Percentage Adjustment", false },
+            { "Theme Settings", false },
+            { "Display Settings", false}
         };
 
         public static Dictionary<string, dynamic> dropdownState = new()
@@ -93,7 +95,8 @@ namespace Aimmy2.Class
         public static Dictionary<string, dynamic> colorState = new()
         {
             { "FOV Color", "#FF8080FF"},
-            { "Detected Player Color", "#FF00FFFF"}
+            { "Detected Player Color", "#FF00FFFF"},
+            { "Theme Color", "#FF722ED1" }
         };
 
         public static Dictionary<string, dynamic> AntiRecoilSettings = new()

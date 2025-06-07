@@ -1,5 +1,4 @@
-﻿using Accord.Math.Distances;
-using AILogic;
+﻿using AILogic;
 using Aimmy2.Class;
 using Class;
 using InputLogic;
@@ -7,17 +6,15 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Other;
 using SharpDX;
-using SharpDX.Direct3D;
 using SharpDX.Direct3D11;
 using SharpDX.DXGI;
 using Supercluster.KDTree;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
 using Visuality;
 using Device = SharpDX.Direct3D11.Device;
@@ -47,8 +44,11 @@ namespace Aimmy2.AILogic
         private Texture2DDescription _texDesc;
         private Texture2D _stagingTex;
 
-        private readonly int ScreenWidth = WinAPICaller.ScreenWidth;
-        private readonly int ScreenHeight = WinAPICaller.ScreenHeight;
+        // Display-aware properties
+        private int ScreenWidth => DisplayManager.ScreenWidth;
+        private int ScreenHeight => DisplayManager.ScreenHeight;
+        private int ScreenLeft => DisplayManager.ScreenLeft;
+        private int ScreenTop => DisplayManager.ScreenTop;
 
         private readonly RunOptions? _modeloptions;
         private InferenceSession? _onnxModel;
@@ -66,7 +66,9 @@ namespace Aimmy2.AILogic
         private int PrevX = 0;
         private int PrevY = 0;
 
-        private int IndependentMousePress = 0;
+        // Benchmarking
+        private int iterationCount = 0;
+        private long totalTime = 0;
 
         private int detectedX { get; set; }
         private int detectedY { get; set; }
@@ -74,27 +76,102 @@ namespace Aimmy2.AILogic
         public double AIConf = 0;
         private static int targetX, targetY;
 
-        private Graphics? _graphics;
-
-        // Pre-calculated values
-        private readonly float _scaleX;
-        private readonly float _scaleY;
+        // Pre-calculated values - now dynamic
+        private float _scaleX => ScreenWidth / 640f;
+        private float _scaleY => ScreenHeight / 640f;
 
         // Tensor reuse (model inference)
         private DenseTensor<float>? _reusableTensor;
         private float[]? _reusableInputArray;
         private List<NamedOnnxValue>? _reusableInputs;
 
+        // Benchmarking
+        private readonly Dictionary<string, BenchmarkData> _benchmarks = new();
+        private readonly object _benchmarkLock = new();
+
+        // Display change handling
+        private readonly object _displayLock = new();
+        private bool _displayChangesPending = false;
+
         #endregion Variables
+
+        #region Benchmarking
+
+        private class BenchmarkData
+        {
+            public long TotalTime { get; set; }
+            public int CallCount { get; set; }
+            public long MinTime { get; set; } = long.MaxValue;
+            public long MaxTime { get; set; }
+            public double AverageTime => CallCount > 0 ? (double)TotalTime / CallCount : 0;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private IDisposable Benchmark(string name)
+        {
+            return new BenchmarkScope(this, name);
+        }
+
+        private class BenchmarkScope : IDisposable
+        {
+            private readonly AIManager _manager;
+            private readonly string _name;
+            private readonly Stopwatch _sw;
+
+            public BenchmarkScope(AIManager manager, string name)
+            {
+                _manager = manager;
+                _name = name;
+                _sw = Stopwatch.StartNew();
+            }
+
+            public void Dispose()
+            {
+                _sw.Stop();
+                _manager.RecordBenchmark(_name, _sw.ElapsedMilliseconds);
+            }
+        }
+
+        private void RecordBenchmark(string name, long elapsedMs)
+        {
+            lock (_benchmarkLock)
+            {
+                if (!_benchmarks.TryGetValue(name, out var data))
+                {
+                    data = new BenchmarkData();
+                    _benchmarks[name] = data;
+                }
+
+                data.TotalTime += elapsedMs;
+                data.CallCount++;
+                data.MinTime = Math.Min(data.MinTime, elapsedMs);
+                data.MaxTime = Math.Max(data.MaxTime, elapsedMs);
+            }
+        }
+
+        public void PrintBenchmarks()
+        {
+            lock (_benchmarkLock)
+            {
+                Debug.WriteLine("=== AIManager Performance Benchmarks ===");
+                foreach (var kvp in _benchmarks.OrderBy(x => x.Key))
+                {
+                    var data = kvp.Value;
+                    Debug.WriteLine($"{kvp.Key}: Avg={data.AverageTime:F2}ms, Min={data.MinTime}ms, Max={data.MaxTime}ms, Count={data.CallCount}");
+                }
+                Debug.WriteLine($"Overall FPS: {(iterationCount > 0 ? 1000.0 / (totalTime / (double)iterationCount) : 0):F2}");
+            }
+        }
+
+        #endregion Benchmarking
 
         public AIManager(string modelPath)
         {
-            // Initialize DXGI capture once
-            InitializeDxgiDuplication();
+            // Subscribe to display changes FIRST
+            DisplayManager.DisplayChanged += OnDisplayChanged;
 
-            // Pre-calculate scaling factors
-            _scaleX = ScreenWidth / 640f;
-            _scaleY = ScreenHeight / 640f;
+            // Initialize DXGI capture for current display
+            InitializeDxgiDuplication();
 
             kalmanPrediction = new KalmanPrediction();
             wtfpredictionManager = new WiseTheFoxPrediction();
@@ -107,71 +184,152 @@ namespace Aimmy2.AILogic
                 EnableMemoryPattern = true,
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
                 ExecutionMode = ExecutionMode.ORT_PARALLEL,
-                InterOpNumThreads = Environment.ProcessorCount, // Auto adjust based on PC capabilities
-                IntraOpNumThreads = Environment.ProcessorCount // Auto adjust based on PC capabilities
+                InterOpNumThreads = Environment.ProcessorCount,
+                IntraOpNumThreads = Environment.ProcessorCount
             };
 
             // Attempt to load via DirectML (else fallback to CPU)
             Task.Run(() => InitializeModel(sessionOptions, modelPath));
         }
 
-        private void InitializeDxgiDuplication()
+        private void OnDisplayChanged(object? sender, DisplayChangedEventArgs e)
         {
-            // Create D3D11 device
-            _dxDevice = new Device(DriverType.Hardware, DeviceCreationFlags.None);
-
-            // Grab the first output (primary monitor)
-            using (var factory = new Factory1())
-            using (var adapter = factory.Adapters1[0])
+            lock (_displayLock)
             {
-                var output = adapter.Outputs[0];
-                using (var output1 = output.QueryInterface<Output1>())
+                _displayChangesPending = true;
+            }
+        }
+
+        private void HandlePendingDisplayChanges()
+        {
+            lock (_displayLock)
+            {
+                if (!_displayChangesPending) return;
+
+                try
                 {
-                    _deskDuplication = output1.DuplicateOutput(_dxDevice);
+                    InitializeDxgiDuplication();
+                    _displayChangesPending = false;
+                }
+                catch (Exception ex)
+                {
+                    // Will retry on next iteration
                 }
             }
+        }
 
-            // Prepare a staging texture for CPU readback
-            _texDesc = new Texture2DDescription
+        private void InitializeDxgiDuplication()
+        {
+            try
             {
-                CpuAccessFlags = CpuAccessFlags.Read,
-                BindFlags = BindFlags.None,
-                Format = Format.B8G8R8A8_UNorm,
-                Height = IMAGE_SIZE,
-                Width = IMAGE_SIZE,
-                OptionFlags = ResourceOptionFlags.None,
-                MipLevels = 1,
-                ArraySize = 1,
-                SampleDescription = new SampleDescription(1, 0),
-                Usage = ResourceUsage.Staging
-            };
-            _stagingTex = new Texture2D(_dxDevice, _texDesc);
+
+                // Clean up any existing resources
+                DisposeDxgiResources();
+
+                using (var factory = new Factory1())
+                {
+                    Output1? targetOutput1 = null;
+                    Adapter1? targetAdapter = null;
+                    int globalOutputIndex = 0;
+
+                    // Find the output by global index
+                    foreach (var adapter in factory.Adapters1)
+                    {
+
+                        var outputCount = adapter.GetOutputCount();
+                        for (int i = 0; i < outputCount; i++)
+                        {
+                            try
+                            {
+                                using (var output = adapter.GetOutput(i))
+                                {
+                                    var desc = output.Description;
+                                    var bounds = desc.DesktopBounds;
+
+                                    if (globalOutputIndex == DisplayManager.CurrentDisplayIndex)
+                                    {
+                                        targetOutput1 = output.QueryInterface<Output1>();
+                                        targetAdapter = adapter;
+                                        break;
+                                    }
+
+                                    globalOutputIndex++;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                globalOutputIndex++;
+                            }
+                        }
+
+                        if (targetOutput1 != null) break;
+                    }
+
+                    if (targetOutput1 == null || targetAdapter == null)
+                    {
+                        targetAdapter = factory.Adapters1[0];
+                        targetOutput1 = targetAdapter.GetOutput(0).QueryInterface<Output1>();
+                    }
+
+                    // Create D3D11 device on the correct adapter
+                    _dxDevice = new Device(targetAdapter, DeviceCreationFlags.None);
+
+                    // Create desktop duplication
+                    _deskDuplication = targetOutput1.DuplicateOutput(_dxDevice);
+                    targetOutput1.Dispose();
+
+                }
+
+                // Create staging texture
+                _texDesc = new Texture2DDescription
+                {
+                    CpuAccessFlags = CpuAccessFlags.Read,
+                    BindFlags = BindFlags.None,
+                    Format = Format.B8G8R8A8_UNorm,
+                    Height = IMAGE_SIZE,
+                    Width = IMAGE_SIZE,
+                    OptionFlags = ResourceOptionFlags.None,
+                    MipLevels = 1,
+                    ArraySize = 1,
+                    SampleDescription = new SampleDescription(1, 0),
+                    Usage = ResourceUsage.Staging
+                };
+                _stagingTex = new Texture2D(_dxDevice, _texDesc);
+
+            }
+            catch (Exception ex)
+            {
+                throw;
+            }
         }
 
         #region Models
 
         private async Task InitializeModel(SessionOptions sessionOptions, string modelPath)
         {
-            try
+            using (Benchmark("ModelInitialization"))
             {
-                await LoadModelAsync(sessionOptions, modelPath, useDirectML: true);
-            }
-            catch (Exception ex)
-            {
-                await Application.Current.Dispatcher.BeginInvoke(new Action(() =>
-                    new NoticeBar($"Error starting the model via DirectML: {ex.Message}\n\nFalling back to CPU, performance may be poor.", 5000).Show()));
                 try
                 {
-                    await LoadModelAsync(sessionOptions, modelPath, useDirectML: false);
+                    await LoadModelAsync(sessionOptions, modelPath, useDirectML: true);
                 }
-                catch (Exception e)
+                catch (Exception ex)
                 {
                     await Application.Current.Dispatcher.BeginInvoke(new Action(() =>
-                        new NoticeBar($"Error starting the model via CPU: {e.Message}, you won't be able to aim assist at all.", 5000).Show()));
+                        new NoticeBar($"Error starting the model via DirectML: {ex.Message}\n\nFalling back to CPU, performance may be poor.", 5000).Show()));
+                    try
+                    {
+                        await LoadModelAsync(sessionOptions, modelPath, useDirectML: false);
+                    }
+                    catch (Exception e)
+                    {
+                        await Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                            new NoticeBar($"Error starting the model via CPU: {e.Message}, you won't be able to aim assist at all.", 5000).Show()));
+                    }
                 }
-            }
 
-            FileManager.CurrentlyLoadingModel = false;
+                FileManager.CurrentlyLoadingModel = false;
+            }
         }
 
         private async Task LoadModelAsync(SessionOptions sessionOptions, string modelPath, bool useDirectML)
@@ -244,39 +402,68 @@ namespace Aimmy2.AILogic
 
         private async void AiLoop()
         {
+            Stopwatch stopwatch = new();
             DetectedPlayerWindow? DetectedPlayerOverlay = Dictionary.DetectedPlayerOverlay;
 
             while (_isAiLoopRunning)
             {
-                UpdateFOV();
+                stopwatch.Restart();
 
-                if (ShouldProcess())
+                // Handle any pending display changes
+                HandlePendingDisplayChanges();
+
+                using (Benchmark("AILoopIteration"))
                 {
-                    if (ShouldPredict())
+                    UpdateFOV();
+
+                    if (ShouldProcess())
                     {
-                        Prediction? closestPrediction = await GetClosestPrediction();
-
-                        if (closestPrediction == null)
+                        if (ShouldPredict())
                         {
-                            DisableOverlay(DetectedPlayerOverlay!);
-                            continue;
-                        }
+                            Prediction? closestPrediction;
+                            using (Benchmark("GetClosestPrediction"))
+                            {
+                                closestPrediction = await GetClosestPrediction();
+                            }
 
-                        await AutoTrigger();
-                        CalculateCoordinates(DetectedPlayerOverlay, closestPrediction, _scaleX, _scaleY);
-                        HandleAim(closestPrediction);
+                            if (closestPrediction == null)
+                            {
+                                DisableOverlay(DetectedPlayerOverlay!);
+                                continue;
+                            }
+
+                            using (Benchmark("AutoTrigger"))
+                            {
+                                await AutoTrigger();
+                            }
+
+                            using (Benchmark("CalculateCoordinates"))
+                            {
+                                CalculateCoordinates(DetectedPlayerOverlay, closestPrediction, _scaleX, _scaleY);
+                            }
+
+                            using (Benchmark("HandleAim"))
+                            {
+                                HandleAim(closestPrediction);
+                            }
+
+                            totalTime += stopwatch.ElapsedMilliseconds;
+                            iterationCount++;
+                        }
+                        else
+                        {
+                            // Processing so we are at the ready but not holding right/click.
+                            await Task.Delay(1);
+                        }
                     }
                     else
                     {
-                        // Processing so we are at the ready but not holding right/click.
+                        // No work to do—sleep briefly to free up CPU
                         await Task.Delay(1);
                     }
                 }
-                else
-                {
-                    // No work to do—sleep briefly to free up CPU
-                    await Task.Delay(1);
-                }
+
+                stopwatch.Stop();
             }
         }
 
@@ -298,10 +485,22 @@ namespace Aimmy2.AILogic
             if (Dictionary.dropdownState["Detection Area Type"] == "Closest to Mouse" && Dictionary.toggleState["FOV"])
             {
                 var mousePosition = WinAPICaller.GetCursorPosition();
+
+                // Check if mouse is on the current display
+                if (!DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(mousePosition.X, mousePosition.Y)))
+                {
+                    // Mouse is on a different display - don't update FOV position
+                    return;
+                }
+
+                // Translate mouse position relative to current display
+                var displayRelativeX = mousePosition.X - DisplayManager.ScreenLeft;
+                var displayRelativeY = mousePosition.Y - DisplayManager.ScreenTop;
+
                 await Application.Current.Dispatcher.BeginInvoke(() =>
                     Dictionary.FOVWindow.FOVStrictEnclosure.Margin = new Thickness(
-                        Convert.ToInt16(mousePosition.X / WinAPICaller.scalingFactorX) - 320,
-                        Convert.ToInt16(mousePosition.Y / WinAPICaller.scalingFactorY) - 320, 0, 0));
+                        Convert.ToInt16(displayRelativeX / WinAPICaller.scalingFactorX) - 320,
+                        Convert.ToInt16(displayRelativeY / WinAPICaller.scalingFactorY) - 320, 0, 0));
             }
         }
 
@@ -330,8 +529,14 @@ namespace Aimmy2.AILogic
         {
             var scalingFactorX = WinAPICaller.scalingFactorX;
             var scalingFactorY = WinAPICaller.scalingFactorY;
-            var centerX = Convert.ToInt16(LastDetectionBox.X / scalingFactorX) + (LastDetectionBox.Width / 2.0);
-            var centerY = Convert.ToInt16(LastDetectionBox.Y / scalingFactorY);
+
+            // Convert screen coordinates to display-relative coordinates
+            var displayRelativeX = LastDetectionBox.X - DisplayManager.ScreenLeft;
+            var displayRelativeY = LastDetectionBox.Y - DisplayManager.ScreenTop;
+
+            // Calculate center position in display-relative coordinates
+            var centerX = Convert.ToInt16(displayRelativeX / scalingFactorX) + (LastDetectionBox.Width / 2.0);
+            var centerY = Convert.ToInt16(displayRelativeY / scalingFactorY);
 
             Application.Current.Dispatcher.Invoke(() =>
             {
@@ -370,7 +575,10 @@ namespace Aimmy2.AILogic
 
             if (Dictionary.toggleState["Show Detected Player"] && Dictionary.DetectedPlayerOverlay != null)
             {
-                UpdateOverlay(DetectedPlayerOverlay!);
+                using (Benchmark("UpdateOverlay"))
+                {
+                    UpdateOverlay(DetectedPlayerOverlay!);
+                }
                 if (!Dictionary.toggleState["Aim Assist"]) return;
             }
 
@@ -498,25 +706,54 @@ namespace Aimmy2.AILogic
 
         private async Task<Prediction?> GetClosestPrediction(bool useMousePosition = true)
         {
-            targetX = Dictionary.dropdownState["Detection Area Type"] == "Closest to Mouse" ?
-                WinAPICaller.GetCursorPosition().X : ScreenWidth / 2;
-            targetY = Dictionary.dropdownState["Detection Area Type"] == "Closest to Mouse" ?
-                WinAPICaller.GetCursorPosition().Y : ScreenHeight / 2;
+            int adjustedTargetX, adjustedTargetY;
+
+            if (Dictionary.dropdownState["Detection Area Type"] == "Closest to Mouse")
+            {
+                var mousePos = WinAPICaller.GetCursorPosition();
+
+                // Check if mouse is on the current display
+                if (DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(mousePos.X, mousePos.Y)))
+                {
+                    // Mouse is on current display, use its position
+                    targetX = mousePos.X;
+                    targetY = mousePos.Y;
+                }
+                else
+                {
+                    // Mouse is on different display, use center of current display
+                    targetX = DisplayManager.ScreenLeft + (DisplayManager.ScreenWidth / 2);
+                    targetY = DisplayManager.ScreenTop + (DisplayManager.ScreenHeight / 2);
+                }
+            }
+            else
+            {
+                // Center of current display
+                targetX = DisplayManager.ScreenLeft + (DisplayManager.ScreenWidth / 2);
+                targetY = DisplayManager.ScreenTop + (DisplayManager.ScreenHeight / 2);
+            }
 
             Rectangle detectionBox = new(targetX - IMAGE_SIZE / 2, targetY - IMAGE_SIZE / 2, IMAGE_SIZE, IMAGE_SIZE);
 
-            Bitmap? frame = ScreenGrab(detectionBox);
+            Bitmap? frame;
+            using (Benchmark("ScreenGrab"))
+            {
+                frame = ScreenGrab(detectionBox);
+            }
             if (frame == null) return null;
 
             float[] inputArray;
-            if (_reusableInputArray == null || _reusableInputArray.Length != 3 * IMAGE_SIZE * IMAGE_SIZE)
+            using (Benchmark("BitmapToFloatArray"))
             {
-                _reusableInputArray = new float[3 * IMAGE_SIZE * IMAGE_SIZE];
-            }
-            inputArray = _reusableInputArray;
+                if (_reusableInputArray == null || _reusableInputArray.Length != 3 * IMAGE_SIZE * IMAGE_SIZE)
+                {
+                    _reusableInputArray = new float[3 * IMAGE_SIZE * IMAGE_SIZE];
+                }
+                inputArray = _reusableInputArray;
 
-            // Fill the reusable array
-            BitmapToFloatArrayInPlace(frame, inputArray);
+                // Fill the reusable array
+                BitmapToFloatArrayInPlace(frame, inputArray);
+            }
 
             // Reuse tensor and inputs
             if (_reusableTensor == null)
@@ -532,7 +769,12 @@ namespace Aimmy2.AILogic
 
             if (_onnxModel == null) return null;
 
-            var results = _onnxModel.Run(_reusableInputs, _outputNames, _modeloptions);
+            IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results;
+            using (Benchmark("ModelInference"))
+            {
+                results = _onnxModel.Run(_reusableInputs, _outputNames, _modeloptions);
+            }
+
             var outputTensor = results[0].AsTensor<float>();
 
             // Calculate the FOV boundaries
@@ -542,15 +784,25 @@ namespace Aimmy2.AILogic
             float fovMinY = (IMAGE_SIZE - FovSize) / 2.0f;
             float fovMaxY = (IMAGE_SIZE + FovSize) / 2.0f;
 
-            (List<double[]> KDpoints, List<Prediction> KDPredictions) = PrepareKDTreeData(outputTensor, detectionBox, fovMinX, fovMaxX, fovMinY, fovMaxY);
+            List<double[]> KDpoints;
+            List<Prediction> KDPredictions;
+            using (Benchmark("PrepareKDTreeData"))
+            {
+                (KDpoints, KDPredictions) = PrepareKDTreeData(outputTensor, detectionBox, fovMinX, fovMaxX, fovMinY, fovMaxY);
+            }
 
             if (KDpoints.Count == 0 || KDPredictions.Count == 0)
             {
                 return null;
             }
 
-            var tree = new KDTree<double, Prediction>(2, KDpoints.ToArray(), KDPredictions.ToArray(), L2Norm_Squared_Double);
-            var nearest = tree.NearestNeighbors(new double[] { IMAGE_SIZE / 2.0, IMAGE_SIZE / 2.0 }, 1);
+            KDTree<double, Prediction> tree;
+            Tuple<double[], Prediction>[]? nearest;
+            using (Benchmark("KDTreeOperations"))
+            {
+                tree = new KDTree<double, Prediction>(2, KDpoints.ToArray(), KDPredictions.ToArray(), L2Norm_Squared_Double);
+                nearest = tree.NearestNeighbors(new double[] { IMAGE_SIZE / 2.0, IMAGE_SIZE / 2.0 }, 1);
+            }
 
             if (nearest != null && nearest.Length > 0)
             {
@@ -563,14 +815,20 @@ namespace Aimmy2.AILogic
                 CenterXTranslated = nearest[0].Item2.CenterXTranslated;
                 CenterYTranslated = nearest[0].Item2.CenterYTranslated;
 
-                SaveFrame(frame, nearest[0].Item2);
+                using (Benchmark("SaveFrame"))
+                {
+                    SaveFrame(frame, nearest[0].Item2);
+                }
                 return nearest[0].Item2;
             }
             else if (Dictionary.toggleState["Collect Data While Playing"] &&
                      !Dictionary.toggleState["Constant AI Tracking"] &&
                      !Dictionary.toggleState["Auto Label Data"])
             {
-                SaveFrame(frame);
+                using (Benchmark("SaveFrame"))
+                {
+                    SaveFrame(frame);
+                }
             }
 
             return null;
@@ -625,7 +883,13 @@ namespace Aimmy2.AILogic
 
         private void SaveFrame(Bitmap frame, Prediction? DoLabel = null)
         {
-            if (!Dictionary.toggleState["Collect Data While Playing"] && Dictionary.toggleState["Constant AI Tracking"]) return;
+            // Only save frames if "Collect Data While Playing" is enabled
+            if (!Dictionary.toggleState["Collect Data While Playing"]) return;
+
+            // Skip if we're in constant tracking mode (unless auto-labeling is enabled)
+            if (Dictionary.toggleState["Constant AI Tracking"] && !Dictionary.toggleState["Auto Label Data"]) return;
+
+            // Cooldown check
             if ((DateTime.Now - lastSavedTime).TotalMilliseconds < SAVE_FRAME_COOLDOWN_MS) return;
 
             lastSavedTime = DateTime.Now;
@@ -652,13 +916,24 @@ namespace Aimmy2.AILogic
 
         public Bitmap? ScreenGrab(Rectangle detectionBox)
         {
-            // 1) Clamp detectionBox so it never goes off-screen
-            if (detectionBox.Left < 0) detectionBox.X = 0;
-            if (detectionBox.Top < 0) detectionBox.Y = 0;
-            if (detectionBox.Right > ScreenWidth) detectionBox.X = ScreenWidth - IMAGE_SIZE;
-            if (detectionBox.Bottom > ScreenHeight) detectionBox.Y = ScreenHeight - IMAGE_SIZE;
+            // Clamp detectionBox to current display bounds
+            var displayBounds = new Rectangle(
+                DisplayManager.ScreenLeft,
+                DisplayManager.ScreenTop,
+                DisplayManager.ScreenWidth,
+                DisplayManager.ScreenHeight);
 
-            // 2) Acquire the next frame from desktop duplication
+            // Ensure detection box is within display bounds
+            if (detectionBox.Left < displayBounds.Left)
+                detectionBox.X = displayBounds.Left;
+            if (detectionBox.Top < displayBounds.Top)
+                detectionBox.Y = displayBounds.Top;
+            if (detectionBox.Right > displayBounds.Right)
+                detectionBox.X = displayBounds.Right - detectionBox.Width;
+            if (detectionBox.Bottom > displayBounds.Bottom)
+                detectionBox.Y = displayBounds.Bottom - detectionBox.Height;
+
+            // Acquire frame
             SharpDX.DXGI.Resource? desktopResource = null;
             OutputDuplicateFrameInformation frameInfo;
             Result result;
@@ -667,100 +942,108 @@ namespace Aimmy2.AILogic
             {
                 result = _deskDuplication.TryAcquireNextFrame(0, out frameInfo, out desktopResource);
             }
-            catch (SharpDXException)
+            catch (SharpDXException ex)
             {
-                // If duplication is lost, attempt to recreate it and return null this frame
-                ReinitializeDxgiDuplication();
+                // Reinitialize on next iteration
+                lock (_displayLock) { _displayChangesPending = true; }
                 return null;
             }
 
-            // If TryAcquireNextFrame failed or desktopResource is null, bail out
             if (result.Failure || desktopResource == null)
             {
-                if (desktopResource != null)
-                {
-                    desktopResource.Dispose();
-                    desktopResource = null;
-                }
+                desktopResource?.Dispose();
                 return null;
             }
 
             try
             {
-                // Now we have a valid desktopResource
                 using (desktopResource)
+                using (var screenTexture2D = desktopResource.QueryInterface<Texture2D>())
                 {
-                    using (var screenTexture2D = desktopResource.QueryInterface<Texture2D>())
+                    // Copy region - coordinates are relative to the display being captured
+                    var region = new ResourceRegion
                     {
-                        // Copy the region of interest to staging texture
-                        var region = new ResourceRegion
+                        Left = detectionBox.Left - DisplayManager.ScreenLeft,
+                        Top = detectionBox.Top - DisplayManager.ScreenTop,
+                        Right = detectionBox.Right - DisplayManager.ScreenLeft,
+                        Bottom = detectionBox.Bottom - DisplayManager.ScreenTop,
+                        Front = 0,
+                        Back = 1
+                    };
+
+                    _dxDevice.ImmediateContext.CopySubresourceRegion(
+                        screenTexture2D, 0, region, _stagingTex, 0, 0, 0, 0);
+
+                    // Map and copy to bitmap
+                    var dataBox = _dxDevice.ImmediateContext.MapSubresource(
+                        _stagingTex, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
+
+                    try
+                    {
+                        if (_screenCaptureBitmap == null ||
+                            _screenCaptureBitmap.Width != detectionBox.Width ||
+                            _screenCaptureBitmap.Height != detectionBox.Height)
                         {
-                            Left = detectionBox.Left,
-                            Top = detectionBox.Top,
-                            Right = detectionBox.Left + detectionBox.Width,
-                            Bottom = detectionBox.Top + detectionBox.Height,
-                            Front = 0,
-                            Back = 1
-                        };
-
-                        _dxDevice.ImmediateContext.CopySubresourceRegion(
-                            screenTexture2D, 0, region, _stagingTex, 0, 0, 0, 0);
-
-                        // Map staging texture to CPU, then build a Bitmap
-                        var dataBox = _dxDevice.ImmediateContext.MapSubresource(
-                            _stagingTex, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
-
-                        try
-                        {
-                            // If bitmap not allocated or wrong size, re-create
-                            if (_screenCaptureBitmap == null
-                                || _screenCaptureBitmap.Width != detectionBox.Width
-                                || _screenCaptureBitmap.Height != detectionBox.Height)
-                            {
-                                _screenCaptureBitmap?.Dispose();
-                                _screenCaptureBitmap = new Bitmap(detectionBox.Width, detectionBox.Height, PixelFormat.Format32bppArgb);
-                            }
-
-                            // Copy from staging data to Bitmap
-                            var bmpData = _screenCaptureBitmap.LockBits(
-                                new Rectangle(0, 0, detectionBox.Width, detectionBox.Height),
-                                ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
-
-                            Utilities.CopyMemory(
-                                bmpData.Scan0,
-                                dataBox.DataPointer,
-                                detectionBox.Width * detectionBox.Height * 4);
-
-                            _screenCaptureBitmap.UnlockBits(bmpData);
+                            _screenCaptureBitmap?.Dispose();
+                            _screenCaptureBitmap = new Bitmap(detectionBox.Width, detectionBox.Height, PixelFormat.Format32bppArgb);
                         }
-                        finally
-                        {
-                            _dxDevice.ImmediateContext.UnmapSubresource(_stagingTex, 0);
-                        }
+
+                        var bmpData = _screenCaptureBitmap.LockBits(
+                            new Rectangle(0, 0, detectionBox.Width, detectionBox.Height),
+                            ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+
+                        Utilities.CopyMemory(bmpData.Scan0, dataBox.DataPointer,
+                            detectionBox.Width * detectionBox.Height * 4);
+
+                        _screenCaptureBitmap.UnlockBits(bmpData);
+                    }
+                    finally
+                    {
+                        _dxDevice.ImmediateContext.UnmapSubresource(_stagingTex, 0);
                     }
                 }
 
-                // Release this frame so the next one can be acquired
                 _deskDuplication.ReleaseFrame();
                 return _screenCaptureBitmap;
             }
-            catch (SharpDXException)
+            catch (Exception ex)
             {
-                // If for some reason the copy or map fails, attempt to reinitialize duplication
-                ReinitializeDxgiDuplication();
+                lock (_displayLock) { _displayChangesPending = true; }
                 return null;
             }
         }
 
-        private void ReinitializeDxgiDuplication()
+        private void DisposeDxgiResources()
         {
-            // Clean up any existing duplication objects
-            try { _deskDuplication?.Dispose(); } catch { }
-            try { _stagingTex?.Dispose(); } catch { }
+            try
+            {
+                // Try to release any pending frame
+                if (_deskDuplication != null)
+                {
+                    try
+                    {
+                        _deskDuplication.ReleaseFrame();
+                    }
+                    catch (SharpDXException)
+                    {
+                        // This is expected if no frame is currently acquired
+                    }
+                }
 
-            // Recreate the duplication chain
-            _dxDevice?.Dispose();
-            InitializeDxgiDuplication();
+                _deskDuplication?.Dispose();
+                _stagingTex?.Dispose();
+                _dxDevice?.Dispose();
+
+                _deskDuplication = null;
+                _stagingTex = null;
+                _dxDevice = null;
+
+                // Small delay to ensure resources are fully released
+                System.Threading.Thread.Sleep(50);
+            }
+            catch (Exception ex)
+            {
+            }
         }
 
         #endregion Screen Capture
@@ -831,32 +1114,33 @@ namespace Aimmy2.AILogic
 
         public void Dispose()
         {
+            // Unsubscribe from display changes
+            DisplayManager.DisplayChanged -= OnDisplayChanged;
+
             // Stop the loop
             _isAiLoopRunning = false;
             if (_aiLoopThread != null && _aiLoopThread.IsAlive)
             {
                 if (!_aiLoopThread.Join(TimeSpan.FromSeconds(1)))
                 {
-                    try
-                    {
-                        _aiLoopThread.Interrupt();
-                    }
+                    try { _aiLoopThread.Interrupt(); }
                     catch { }
                 }
             }
 
-            // Dispose DXGI objects
-            _stagingTex?.Dispose();
-            _deskDuplication?.Dispose();
-            _dxDevice?.Dispose();
+            // Print final benchmarks
+            PrintBenchmarks();
 
-            // Clean up reusable resources
+            // Dispose DXGI objects
+            DisposeDxgiResources();
+
+            // Clean up other resources
             _reusableInputArray = null;
             _reusableInputs = null;
-
             _onnxModel?.Dispose();
             _modeloptions?.Dispose();
             _bitmapBuffer = null;
+            _screenCaptureBitmap?.Dispose();
         }
 
         public class Prediction

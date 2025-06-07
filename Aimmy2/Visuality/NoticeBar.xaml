@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:Visuality"
         mc:Ignorable="d"
-        Title="NoticeBar"
+        Title="NoticeBarContainer"
         Height="450"
         Width="800"
         AllowsTransparency="True"
@@ -15,44 +15,171 @@
         Foreground="{x:Null}"
         WindowState="Maximized"
         Topmost="True">
+
+    <Window.Resources>
+        <!-- Single item template for notices -->
+        <DataTemplate x:Key="NoticeTemplate">
+            <Grid x:Name="NoticeItemContainer"
+                  Margin="0,0,0,15"
+                  RenderTransformOrigin="0.5,0.5"
+                  CacheMode="BitmapCache">
+                <Grid.RenderTransform>
+                    <TransformGroup>
+                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                        <TranslateTransform X="0" Y="0"/>
+                    </TransformGroup>
+                </Grid.RenderTransform>
+
+                <!-- Simplified shadow using gradient instead of blur -->
+                <Border CornerRadius="10"
+                        Margin="2,2,2,-2"
+                        Opacity="0.3">
+                    <Border.Background>
+                        <RadialGradientBrush>
+                            <GradientStop Color="#FF000000" Offset="0"/>
+                            <GradientStop Color="#00000000" Offset="1"/>
+                        </RadialGradientBrush>
+                    </Border.Background>
+                </Border>
+
+                <!-- Main notice border -->
+                <Border MinHeight="50"
+                        MaxWidth="500"
+                        CornerRadius="10"
+                        BorderThickness="1"
+                        BorderBrush="{Binding BorderBrush}">
+
+                    <!-- Simplified background -->
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                            <GradientStop Color="#E6000000" Offset="0"/>
+                            <GradientStop Color="{Binding ThemeColorMid}" Offset="0.5"/>
+                            <GradientStop Color="{Binding ThemeColorEnd}" Offset="1"/>
+                        </LinearGradientBrush>
+                    </Border.Background>
+
+                    <!-- Content grid -->
+                    <Grid Margin="15,12,15,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Simplified icon -->
+                        <Path Grid.Column="0"
+                              Fill="{Binding IconColor}"
+                              Data="{Binding IconData}"
+                              Stretch="Uniform"
+                              Width="16"
+                              Height="16"
+                              Margin="0,0,12,0"
+                              VerticalAlignment="Center"/>
+
+                        <!-- Message text -->
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding Message}"
+                                   Foreground="#FFFFFFFF"
+                                   VerticalAlignment="Center"
+                                   FontSize="13"
+                                   FontFamily="Segoe UI"
+                                   FontWeight="Normal"
+                                   TextWrapping="Wrap"
+                                   LineHeight="18"/>
+
+                        <!-- Progress bar -->
+                        <Border Grid.Column="2"
+                                Width="50"
+                                Height="3"
+                                Margin="12,0,0,0"
+                                CornerRadius="1.5"
+                                Background="#1AFFFFFF"
+                                VerticalAlignment="Center">
+                            <Border x:Name="ProgressBar"
+                                    CornerRadius="1.5"
+                                    HorizontalAlignment="Left"
+                                    Width="50">
+                                <Border.Background>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                        <GradientStop Color="{Binding ThemeColorMid}" Offset="0"/>
+                                        <GradientStop Color="{Binding ThemeColorLight}" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Border.Background>
+                            </Border>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Grid>
+        </DataTemplate>
+
+        <!-- Item container style for animations -->
+        <Style x:Key="NoticeItemStyle" TargetType="ListBoxItem">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <ContentPresenter/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <TransformGroup>
+                        <ScaleTransform ScaleX="0.9" ScaleY="0.9"/>
+                        <TranslateTransform X="80" Y="0"/>
+                    </TransformGroup>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Opacity" Value="0"/>
+            <Style.Triggers>
+                <EventTrigger RoutedEvent="Loaded">
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             From="0" To="1" Duration="0:0:0.25"/>
+                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].ScaleX"
+                                             From="0.9" To="1" Duration="0:0:0.25">
+                                <DoubleAnimation.EasingFunction>
+                                    <CubicEase EasingMode="EaseOut"/>
+                                </DoubleAnimation.EasingFunction>
+                            </DoubleAnimation>
+                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[0].ScaleY"
+                                             From="0.9" To="1" Duration="0:0:0.25">
+                                <DoubleAnimation.EasingFunction>
+                                    <CubicEase EasingMode="EaseOut"/>
+                                </DoubleAnimation.EasingFunction>
+                            </DoubleAnimation>
+                            <DoubleAnimation Storyboard.TargetProperty="RenderTransform.Children[1].X"
+                                             From="80" To="0" Duration="0:0:0.25">
+                                <DoubleAnimation.EasingFunction>
+                                    <CubicEase EasingMode="EaseOut"/>
+                                </DoubleAnimation.EasingFunction>
+                            </DoubleAnimation>
+                        </Storyboard>
+                    </BeginStoryboard>
+                </EventTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
     <Grid>
-        <Border x:Name="Notice"
-                Height="Auto"
-                CornerRadius="2,2,2,2"
-                BorderBrush="Black"
-                BorderThickness="1"
-                VerticalAlignment="Bottom"
-                HorizontalAlignment="Center"
-                Margin="0,0,0,100">
-            <Border.Background>
-                <LinearGradientBrush EndPoint="0.5,1"
-                                     StartPoint="0.5,0">
-                    <LinearGradientBrush.RelativeTransform>
-                        <TransformGroup>
-                            <ScaleTransform CenterY="0.5"
-                                            CenterX="0.5" />
-                            <SkewTransform CenterX="0.5"
-                                           CenterY="0.5" />
-                            <RotateTransform Angle="-90"
-                                             CenterX="0.5"
-                                             CenterY="0.5" />
-                            <TranslateTransform />
-                        </TransformGroup>
-                    </LinearGradientBrush.RelativeTransform>
-                    <GradientStop Color="Black" />
-                    <GradientStop Color="#FF120338"
-                                  Offset="1" />
-                </LinearGradientBrush>
-            </Border.Background>
-            <Label x:Name="ContentText"
-                   Content="This feature has not been implemented yet."
-                   Foreground="#DDFFFFFF"
-                   VerticalContentAlignment="Center"
-                   HorizontalContentAlignment="Center"
-                   IsHitTestVisible="True"
-                   FontSize="14"
-                   Padding="20,10,20,10"
-                   FontFamily="{StaticResource Atkinson Hyperlegible}" />
-        </Border>
+        <!-- Single container for all notices -->
+        <ListBox x:Name="NoticesContainer"
+                 VerticalAlignment="Bottom"
+                 HorizontalAlignment="Center"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                 IsHitTestVisible="False"
+                 ItemTemplate="{StaticResource NoticeTemplate}"
+                 ItemContainerStyle="{StaticResource NoticeItemStyle}"
+                 Margin="0,0,0,200">
+            <ListBox.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel/>
+                </ItemsPanelTemplate>
+            </ListBox.ItemsPanel>
+        </ListBox>
     </Grid>
 </Window>

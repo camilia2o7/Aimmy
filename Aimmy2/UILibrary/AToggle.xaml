@@ -6,6 +6,8 @@
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:Ant="clr-namespace:AntWpf.Controls;assembly=AntWpf"
              xmlns:local="clr-namespace:Aimmy2.UILibrary"
+             xmlns:theme="clr-namespace:Aimmy2.Theme"
+             theme:ThemeBehavior.AutoRegister="True"
              mc:Ignorable="d"
              d:DesignWidth="282.5"
              d:DesignHeight="40">
@@ -26,14 +28,14 @@
                        Margin="0,0,40,0" />
 
                 <Border x:Name="SwitchBorder"
+                        theme:ThemeBehavior.Theme="Theme:BorderBrush"
                         HorizontalAlignment="Right"
                         VerticalAlignment="Center"
                         Width="36"
                         Height="18"
                         CornerRadius="8,8,8,8"
                         Margin="0,0,10,0"
-                        BorderThickness="2"
-                        BorderBrush="#FF722ED1">
+                        BorderThickness="2">
                     <Border x:Name="SwitchMoving"
                             HorizontalAlignment="Right"
                             VerticalAlignment="Center"

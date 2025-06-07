@@ -16,6 +16,28 @@ namespace Other
             client = new HttpClient();
         }
 
+        private int CompareVersions(string currentVersion, string latestVersion)
+        {
+            try
+            {
+                // Remove 'v' prefix if present
+                currentVersion = currentVersion.TrimStart('v', 'V');
+                latestVersion = latestVersion.TrimStart('v', 'V');
+
+                // Parse versions
+                var current = Version.Parse(currentVersion);
+                var latest = Version.Parse(latestVersion);
+
+                return current.CompareTo(latest);
+            }
+            catch (Exception ex)
+            {
+
+                // Fallback to string comparison if parsing fails
+                return string.Compare(currentVersion, latestVersion, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
         public async Task CheckForUpdate(string currentVersion)
         {
             GithubManager githubManager = new();
@@ -26,18 +48,25 @@ namespace Other
                 new NoticeBar("Failed to get latest release information from Github.", 5000).Show();
                 return;
             }
-            else
-            {
-                if (latestVersion == currentVersion)
-                {
-                    new NoticeBar("You are up to date.", 5000).Show();
-                    return;
-                }
 
-                new NoticeBar("An update was found, downloading the update from Github.", 5000).Show();
-                githubManager.Dispose();
-                await DoUpdate(latestZipUrl);
+            // Compare versions
+            var comparison = CompareVersions(currentVersion, latestVersion);
+
+            if (comparison == 0)
+            {
+                new NoticeBar("You are up to date.", 5000).Show();
+                return;
             }
+            else if (comparison > 0)
+            {
+                new NoticeBar($"You are running a newer version ({currentVersion}) than the latest release ({latestVersion}).", 5000).Show();
+                return;
+            }
+
+            // Only update if latest version is newer
+            new NoticeBar("An update was found, downloading the update from Github.", 5000).Show();
+            githubManager.Dispose();
+            await DoUpdate(latestZipUrl);
         }
 
         private async Task DoUpdate(string latestZipUrl)

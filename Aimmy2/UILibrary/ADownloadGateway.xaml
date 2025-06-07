@@ -5,7 +5,9 @@
              xmlns:local="clr-namespace:Aimmy2.UILibrary"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:xrpb="http://XamlRadialProgressBar/DotNet"
+             xmlns:theme="clr-namespace:Aimmy2.Theme"
              x:Class="Aimmy2.UILibrary.ADownloadGateway"
+             theme:ThemeBehavior.AutoRegister="True"
              mc:Ignorable="d"
              d:DesignHeight="45"
              d:DesignWidth="532"
@@ -26,6 +28,7 @@
                        FontSize="13"
                        Margin="0,0,60,0" />
                 <Button x:Name="DownloadButton"
+                        Tag="Theme:Background"
                         Content="&#xE896;"
                         HorizontalAlignment="Right"
                         Height="20"
@@ -36,7 +39,6 @@
                         FontFamily="Segoe MDL2 Assets"
                         BorderThickness="0,0,0,0"
                         BorderBrush="{x:Null}"
-                        Background="#FF722ED1"
                         FontSize="10"
                         materialDesign:ButtonAssist.CornerRadius="5"
                         Foreground="White" />

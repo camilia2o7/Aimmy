@@ -1,4 +1,5 @@
 ﻿using Aimmy2.Class;
+using Aimmy2.Theme;
 using AimmyWPF.Class;
 using Class;
 using System.IO;
@@ -17,9 +18,12 @@ namespace Visuality
     /// </summary>
     public partial class ConfigSaver : Window
     {
-        private static Color EnableColor = (Color)ColorConverter.ConvertFromString("#FF722ED1");
         private static Color DisableColor = (Color)ColorConverter.ConvertFromString("#FFFFFFFF");
         private static TimeSpan AnimationDuration = TimeSpan.FromMilliseconds(500);
+
+        // Theme-aware color properties
+        private Color EnableColor => ThemeManager.ThemeColor;
+        private Color ThemeGradientColor => ThemeManager.ThemeColorDark;
 
         public void SetColorAnimation(Color fromColor, Color toColor, TimeSpan duration)
         {
@@ -32,6 +36,33 @@ namespace Visuality
         public ConfigSaver()
         {
             InitializeComponent();
+
+            // Initialize theme colors
+            UpdateThemeColors();
+
+            // Subscribe to theme changes
+            ThemeManager.RegisterElement(this);
+            ThemeManager.ThemeChanged += OnThemeChanged;
+        }
+
+        private void OnThemeChanged(object sender, Color newColor)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                UpdateThemeColors();
+            });
+        }
+
+        private void UpdateThemeColors()
+        {
+            // Update gradient stop color
+            ThemeGradientStop.Color = ThemeGradientColor;
+
+            // Update switch border color if it's enabled
+            if (ExtraStrings != string.Empty)
+            {
+                SetColorAnimation((Color)SwitchMoving.Background.GetValue(SolidColorBrush.ColorProperty), EnableColor, TimeSpan.Zero);
+            }
         }
 
         private void WriteJSON()
@@ -65,6 +96,14 @@ namespace Visuality
             {
                 WriteJSON();
             }
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            // Unregister from theme manager
+            ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.UnregisterElement(this);
+            base.OnClosed(e);
         }
 
         #region Window Controls

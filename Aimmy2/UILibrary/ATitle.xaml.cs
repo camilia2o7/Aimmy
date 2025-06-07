@@ -30,7 +30,6 @@ namespace Aimmy2.UILibrary
 
             Minimize.Click += (s, e) =>
             {
-                //Debug.WriteLine(Minimize.Content);
                 switch (Dictionary.minimizeState[Text])
                 {
                     case false:

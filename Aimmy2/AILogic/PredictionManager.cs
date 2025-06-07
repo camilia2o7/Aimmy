@@ -117,7 +117,6 @@ namespace AILogic
 
     //    public static int GetSPY()
     //    {
-    //        //Debug.WriteLine((int)Queryable.Average(yValues.AsQueryable()));
     //        return (int)(((Queryable.Average(yValues.AsQueryable()) * AmountCount) + WinAPICaller.GetCursorPosition().Y));
     //    }
     //}

@@ -5,7 +5,9 @@
              xmlns:local="clr-namespace:Aimmy2.UILibrary"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:Ant="clr-namespace:AntWpf.Controls;assembly=AntWpf"
+             xmlns:theme="clr-namespace:Aimmy2.Theme"
              x:Class="Aimmy2.UILibrary.ATitle"
+             theme:ThemeBehavior.AutoRegister="True"
              mc:Ignorable="d"
              d:DesignWidth="282.5"
              d:DesignHeight="40">
@@ -26,10 +28,10 @@
                        FontWeight="Bold"
                        Margin="0,0,30,0" />
                 <Ant:Button x:Name="Minimize"
+                        Tag="Theme:EffectBrush"
                         Content="&#xE921;"
                         HorizontalAlignment="Right"
                         BorderThickness="0"
-                        EffectBrush="#FF722ED1"
                         Foreground="#ffffff"
                         BorderBrush="#00D9D9D9"
                         Background="Transparent"

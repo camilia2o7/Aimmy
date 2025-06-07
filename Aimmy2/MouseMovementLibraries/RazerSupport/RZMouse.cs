@@ -48,7 +48,6 @@ namespace MouseMovementLibraries.RazerSupport
 
             var result = MessageBox.Show("Razer Synapse is not running, do you have it installed?",
                                          "Aimmy - Razer Synapse", MessageBoxButton.YesNo);
-            Debug.WriteLine("Couldn't Find Process");
             if (result == MessageBoxResult.No)
             {
                 await InstallRazerSynapse();

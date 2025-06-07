@@ -111,6 +111,14 @@ namespace Class
         public AToggle? T_XAxisPercentageAdjustment { get; set; }
         public AToggle? T_YAxisPercentageAdjustment { get; set; }
 
+        // Theme Color Changer
+        public ATitle? AT_ThemeColorWheel { get; set; }
+        public AColorWheel? ThemeColorWheel { get; set; }
+
+        // Display Selector
+        public ATitle? AT_DisplaySelector { get; set; }
+        public ADisplaySelector? DisplaySelector { get; set; }
+
         // ddxoft UI
         public AFileLocator? AFL_ddxoftDLLLocator { get; set; }
 

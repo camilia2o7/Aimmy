@@ -1,5 +1,6 @@
 ﻿using Aimmy2;
 using Aimmy2.Class;
+using Aimmy2.Theme;
 using AimmyWPF.Class;
 using InputLogic;
 using System.Windows;
@@ -34,6 +35,28 @@ namespace Visuality
             HoldDownTimer.Start();
 
             ChangingFireRate = (int)Dictionary.AntiRecoilSettings["Fire Rate"];
+
+            // Initialize theme colors
+            UpdateThemeColors();
+
+            // Subscribe to theme changes
+            ThemeManager.RegisterElement(this);
+            ThemeManager.ThemeChanged += OnThemeChanged;
+        }
+
+        private void OnThemeChanged(object sender, System.Windows.Media.Color newColor)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                UpdateThemeColors();
+            });
+        }
+
+        private void UpdateThemeColors()
+        {
+            // Update gradient colors
+            TopGradientStop.Color = ThemeManager.ThemeColorDark;
+            ThemeGradientStop.Color = ThemeManager.ThemeColorDark;
         }
 
         private void HoldDownTimerTicker(object? sender, EventArgs e)
@@ -102,6 +125,14 @@ namespace Visuality
             Animator.ObjectShift(TimeSpan.FromMilliseconds(350), BulletBorder, BulletBorder.Margin, new Thickness(0, 0, 0, -140));
 
             HoldDownTimer.Start();
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            // Unregister from theme manager
+            ThemeManager.ThemeChanged -= OnThemeChanged;
+            ThemeManager.UnregisterElement(this);
+            base.OnClosed(e);
         }
     }
 }

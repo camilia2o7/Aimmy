@@ -1,13 +1,12 @@
 using Aimmy2.Class;
+using Aimmy2.Controls;
 using Aimmy2.MouseMovementLibraries.GHubSupport;
 using Aimmy2.Other;
+using Aimmy2.Theme;
 using Aimmy2.UILibrary;
 using AimmyWPF.Class;
 using Class;
 using InputLogic;
-using Microsoft.Win32;
-using MouseMovementLibraries.ddxoftSupport;
-using MouseMovementLibraries.RazerSupport;
 using Other;
 using System.Diagnostics;
 using System.IO;
@@ -17,130 +16,404 @@ using System.Windows.Input;
 using System.Windows.Media;
 using UILibrary;
 using Visuality;
-using Application = System.Windows.Application;
 
 namespace Aimmy2
 {
     public partial class MainWindow : Window
     {
-        #region Main Variables
+        #region Managers and Windows
 
-        private InputBindingManager bindingManager;
-        private FileManager fileManager;
-        private static FOV FOVWindow = new();
-        private static DetectedPlayerWindow DPWindow = new();
-        private static GithubManager githubManager = new();
-        public UI uiManager = new();
-        public AntiRecoilManager arManager = new();
+        // Core managers (lazy-loaded)
+        private readonly Lazy<InputBindingManager> _bindingManager = new(() => new InputBindingManager());
+        private static readonly Lazy<GithubManager> _githubManager = new(() => new GithubManager());
+        private readonly Lazy<UI> _uiManager = new(() => new UI());
+        private readonly Lazy<AntiRecoilManager> _arManager = new(() => new AntiRecoilManager());
+        private Lazy<FileManager>? _fileManager;
 
-        private Dictionary<string, AToggle> toggleInstances = [];
+        // Windows
+        private static readonly Lazy<FOV> _fovWindow = new(() =>
+        {
+            var window = new FOV();
+            // Force immediate reposition to current display
+            window.ForceReposition();
+            return window;
+        });
 
-        private bool CurrentlySwitching;
+        private static readonly Lazy<DetectedPlayerWindow> _dpWindow = new(() =>
+        {
+            var window = new DetectedPlayerWindow();
+            // Force immediate reposition to current display
+            window.ForceReposition();
+            return window;
+        });
+
+        // Public accessors
+        internal InputBindingManager bindingManager => _bindingManager.Value;
+        internal FileManager fileManager => _fileManager?.Value ?? throw new InvalidOperationException("FileManager not initialized");
+        public static FOV FOVWindow => _fovWindow.Value;
+        public static DetectedPlayerWindow DPWindow => _dpWindow.Value;
+        public static GithubManager githubManager => _githubManager.Value;
+        public UI uiManager => _uiManager.Value;
+        public AntiRecoilManager arManager => _arManager.Value;
+
+        #endregion
+
+        #region UI State
+
+        internal Dictionary<string, AToggle> toggleInstances = new();
+        private readonly Dictionary<string, UserControl?> _menuControls = new();
+        private readonly Dictionary<string, bool> _menuInitialized = new();
+        private UserControl? _currentControl;
+        private string _currentMenu = "AimMenu";
+        private bool _currentlySwitching;
         private ScrollViewer? CurrentScrollViewer;
+        public double ActualFOV { get; set; } = 640;
+        private double _currentGradientAngle;
 
-        private HashSet<string> AvailableModels = new();
-        private HashSet<string> AvailableConfigs = new();
+        // Menu names constant
+        private static readonly string[] MenuNames = { "AimMenu", "ModelMenu", "SettingsMenu", "AboutMenu" };
 
-        private static double ActualFOV = 640;
+        #endregion
 
-        #endregion Main Variables
-
-        #region Loading Window
+        #region Initialization
 
         public MainWindow()
         {
             InitializeComponent();
+        }
 
+        private async void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                InitializeMenus();
+                InitializeFileManagerEarly();
+                LoadInitialMenu();
+                await InitializeApplicationAsync();
+                UpdateAboutSpecs();
+                ApplyThemeGradients();
+            }
+            catch (Exception ex)
+            {
+                ShowError($"Error during startup: {ex.Message}", ex);
+            }
+        }
+
+        private void InitializeMenus()
+        {
+            foreach (var menu in MenuNames)
+            {
+                _menuControls[menu] = null;
+                _menuInitialized[menu] = false;
+            }
+        }
+
+        private void InitializeFileManagerEarly()
+        {
+            var modelMenu = new ModelMenuControl();
+            modelMenu.Initialize(this);
+            _menuControls["ModelMenu"] = modelMenu;
+            InitializeFileManager(modelMenu);
+        }
+
+        private void LoadInitialMenu()
+        {
+            LoadMenu("AimMenu");
+            _currentMenu = "AimMenu";
+        }
+
+        private async Task InitializeApplicationAsync()
+        {
+            CheckRunningFromTemp();
+
+            // Initialize DisplayManager FIRST before anything else that depends on display info
+            DisplayManager.Initialize();
+
+            // Now that DisplayManager is initialized, we can create windows
+            InitializeWindows();
+
+            EnsureRequiredFiles();
+            await LoadConfigurationsAsync();
+            SetupKeybindings();
+            LoadDropdownStates();
+            ConfigurePropertyChangers();
+            ApplyInitialSettings();
+            ListenForKeybinds();
+
+            // Subscribe to display changes after everything is initialized
+            DisplayManager.DisplayChanged += OnDisplayChanged;
+        }
+
+        private void OnDisplayChanged(object? sender, DisplayChangedEventArgs e)
+        {
+
+            // Force update all windows to new display
+            DisplayManager.ForceUpdateWindows();
+        }
+
+        private void CheckRunningFromTemp()
+        {
             if (Directory.GetCurrentDirectory().Contains("Temp"))
             {
                 MessageBox.Show(
-                    "Hi, it is made aware that you are running Aimmy without extracting it from the zip file." +
-                    " Please extract Aimmy from the zip file or Aimmy will not be able to run properly." +
-                    "\n\nThank you.",
-                    "Aimmy V2"
-                    );
+                    "Hi, it is made aware that you are running Aimmy without extracting it from the zip file. " +
+                    "Please extract Aimmy from the zip file or Aimmy will not be able to run properly.\n\nThank you.",
+                    "Aimmy V2");
             }
-
-            CurrentScrollViewer = FindName("AimMenu") as ScrollViewer;
-            if (CurrentScrollViewer == null) throw new NullReferenceException("CurrentScrollViewer is null");
-
-            Dictionary.DetectedPlayerOverlay = DPWindow;
-            Dictionary.FOVWindow = FOVWindow;
-
-            fileManager = new FileManager(ModelListBox, SelectedModelNotifier, ConfigsListBox, SelectedConfigNotifier);
-
-            // Needed to import annotations into MakeSense
-            if (!File.Exists("bin\\labels\\labels.txt")) { File.WriteAllText("bin\\labels\\labels.txt", "Enemy"); }
-
-            arManager.HoldDownLoad();
-
-            LoadConfig();
-            LoadAntiRecoilConfig();
-
-            SaveDictionary.LoadJSON(Dictionary.minimizeState, "bin\\minimize.cfg");
-            SaveDictionary.LoadJSON(Dictionary.bindingSettings, "bin\\binding.cfg");
-            SaveDictionary.LoadJSON(Dictionary.colorState, "bin\\colors.cfg");
-            SaveDictionary.LoadJSON(Dictionary.filelocationState, "bin\\filelocations.cfg");
-
-            bindingManager = new InputBindingManager();
-            bindingManager.SetupDefault("Aim Keybind", Dictionary.bindingSettings["Aim Keybind"]);
-            bindingManager.SetupDefault("Second Aim Keybind", Dictionary.bindingSettings["Second Aim Keybind"]);
-            bindingManager.SetupDefault("Dynamic FOV Keybind", Dictionary.bindingSettings["Dynamic FOV Keybind"]);
-            bindingManager.SetupDefault("Emergency Stop Keybind", Dictionary.bindingSettings["Emergency Stop Keybind"]);
-            bindingManager.SetupDefault("Model Switch Keybind", Dictionary.bindingSettings["Model Switch Keybind"]);
-
-            bindingManager.SetupDefault("Anti Recoil Keybind", Dictionary.bindingSettings["Anti Recoil Keybind"]);
-            bindingManager.SetupDefault("Disable Anti Recoil Keybind", Dictionary.bindingSettings["Disable Anti Recoil Keybind"]);
-            bindingManager.SetupDefault("Gun 1 Key", Dictionary.bindingSettings["Gun 1 Key"]);
-            bindingManager.SetupDefault("Gun 2 Key", Dictionary.bindingSettings["Gun 2 Key"]);
-
-            LoadAimMenu();
-            LoadSettingsMenu();
-            LoadCreditsMenu();
-            LoadStoreMenuAsync();
-
-            SaveDictionary.LoadJSON(Dictionary.dropdownState, "bin\\dropdown.cfg");
-            LoadDropdownStates();
-
-            PropertyChanger.ReceiveNewConfig = LoadConfig;
-
-            ActualFOV = Dictionary.sliderSettings["FOV Size"];
-            PropertyChanger.PostNewFOVSize(Dictionary.sliderSettings["FOV Size"]);
-            PropertyChanger.PostColor((Color)ColorConverter.ConvertFromString(Dictionary.colorState["FOV Color"]));
-
-            PropertyChanger.PostDPColor((Color)ColorConverter.ConvertFromString(Dictionary.colorState["Detected Player Color"]));
-            PropertyChanger.PostDPFontSize((int)Dictionary.sliderSettings["AI Confidence Font Size"]);
-            PropertyChanger.PostDPWCornerRadius((int)Dictionary.sliderSettings["Corner Radius"]);
-            PropertyChanger.PostDPWBorderThickness((double)Dictionary.sliderSettings["Border Thickness"]);
-            PropertyChanger.PostDPWOpacity((double)Dictionary.sliderSettings["Opacity"]);
-
-            ListenForKeybinds();
-            LoadMenuMinimizers();
         }
 
-        private async void LoadStoreMenuAsync() => await LoadStoreMenu();
+        private void InitializeWindows()
+        {
+            // Create windows but don't show them yet
+            var fov = FOVWindow;  // This triggers lazy initialization
+            var dpw = DPWindow;   // This triggers lazy initialization
 
-        private void Window_Loaded(object sender, RoutedEventArgs e) => AboutSpecs.Content = $"{GetProcessorName()} • {GetVideoControllerName()} • {GetFormattedMemorySize()}GB RAM";
+            // Ensure they're positioned on the current display
+            fov.ForceReposition();
+            dpw.ForceReposition();
+
+            // Set references in Dictionary
+            Dictionary.DetectedPlayerOverlay = dpw;
+            Dictionary.FOVWindow = fov;
+        }
+
+        private void EnsureRequiredFiles()
+        {
+            var labelsPath = "bin\\labels\\labels.txt";
+            if (!File.Exists(labelsPath))
+            {
+                File.WriteAllText(labelsPath, "Enemy");
+            }
+        }
+
+        private async Task LoadConfigurationsAsync()
+        {
+            await Task.Run(() =>
+            {
+                arManager.HoldDownLoad();
+                LoadConfig();
+                LoadAntiRecoilConfig();
+
+                var configs = new[]
+                {
+                    (Dictionary.minimizeState, "bin\\minimize.cfg"),
+                    (Dictionary.bindingSettings, "bin\\binding.cfg"),
+                    (Dictionary.colorState, "bin\\colors.cfg"),
+                    (Dictionary.filelocationState, "bin\\filelocations.cfg"),
+                    (Dictionary.dropdownState, "bin\\dropdown.cfg")
+                };
+
+                foreach (var (dict, path) in configs)
+                {
+                    SaveDictionary.LoadJSON(dict, path);
+                }
+            });
+
+            ApplyThemeColorFromConfig();
+        }
+
+        private void ApplyThemeColorFromConfig()
+        {
+            if (Dictionary.colorState.TryGetValue("Theme Color", out var themeColor))
+            {
+                var colorString = themeColor?.ToString();
+                if (!string.IsNullOrEmpty(colorString))
+                {
+                    try
+                    {
+                        ThemeManager.SetThemeColor(colorString);
+                    }
+                    catch (Exception ex)
+                    {
+                    }
+                }
+            }
+        }
+
+        private void SetupKeybindings()
+        {
+            var keybinds = new[]
+            {
+                "Aim Keybind", "Second Aim Keybind", "Dynamic FOV Keybind",
+                "Emergency Stop Keybind", "Model Switch Keybind",
+                "Anti Recoil Keybind", "Disable Anti Recoil Keybind",
+                "Gun 1 Key", "Gun 2 Key"
+            };
+
+            foreach (var keybind in keybinds)
+            {
+                bindingManager.SetupDefault(keybind, Dictionary.bindingSettings[keybind].ToString());
+            }
+        }
+
+        private void ConfigurePropertyChangers()
+        {
+            PropertyChanger.ReceiveNewConfig = LoadConfig;
+        }
+
+        private void ApplyInitialSettings()
+        {
+            // FOV settings
+            ActualFOV = Convert.ToDouble(Dictionary.sliderSettings["FOV Size"]);
+            PropertyChanger.PostNewFOVSize(ActualFOV);
+            PropertyChanger.PostColor((Color)ColorConverter.ConvertFromString(Dictionary.colorState["FOV Color"].ToString()));
+
+            // Detected player window settings
+            var dpSettings = new[]
+            {
+                ("Detected Player Color", (Action<object>)(c => PropertyChanger.PostDPColor((Color)c))),
+                ("AI Confidence Font Size", (Action<object>)(s => PropertyChanger.PostDPFontSize((int)(double)s))),
+                ("Corner Radius", (Action<object>)(r => PropertyChanger.PostDPWCornerRadius((int)(double)r))),
+                ("Border Thickness", (Action<object>)(t => PropertyChanger.PostDPWBorderThickness((double)t))),
+                ("Opacity", (Action<object>)(o => PropertyChanger.PostDPWOpacity((double)o)))
+            };
+
+            foreach (var (key, action) in dpSettings)
+            {
+                if (key.Contains("Color"))
+                {
+                    action(ColorConverter.ConvertFromString(Dictionary.colorState[key].ToString()));
+                }
+                else
+                {
+                    action(Convert.ToDouble(Dictionary.sliderSettings[key]));
+                }
+            }
+        }
+
+        private void UpdateAboutSpecs()
+        {
+            if (_menuControls["AboutMenu"] is AboutMenuControl aboutMenu)
+            {
+                aboutMenu.AboutSpecsControl.Content = "Loading system specs...";
+
+                Task.Run(() =>
+                {
+                    var specs = $"{GetProcessorName()} • {GetVideoControllerName()} • {GetFormattedMemorySize()}GB RAM";
+                    Dispatcher.Invoke(() => aboutMenu.AboutSpecsControl.Content = specs);
+                });
+            }
+        }
+
+        private void ShowError(string message, Exception ex)
+        {
+            MessageBox.Show($"{message}\n\nStack trace: {ex.StackTrace}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        private void ApplyThemeGradients()
+        {
+            if (!Dictionary.colorState.TryGetValue("Theme Color", out var themeColor)) return;
+
+            var colorString = themeColor?.ToString();
+            if (string.IsNullOrEmpty(colorString)) return;
+
+            try
+            {
+                var color = (Color)ColorConverter.ConvertFromString(colorString);
+
+                var gradientMappings = new Dictionary<string, Func<Color, Color>>
+                {
+                    ["GradientThemeStop"] = c => Color.FromRgb((byte)(c.R * 0.3), (byte)(c.G * 0.3), (byte)(c.B * 0.3)),
+                    ["HighlighterGradient1"] = c => c,
+                    ["HighlighterGradient2"] = c => Color.FromArgb(102, c.R, c.G, c.B)
+                };
+
+                foreach (var (elementName, colorTransform) in gradientMappings)
+                {
+                    if (FindName(elementName) is GradientStop gradientStop)
+                    {
+                        gradientStop.Color = colorTransform(color);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+            }
+        }
+
+        private void InitializeFileManager(ModelMenuControl modelMenu)
+        {
+            if (_fileManager == null)
+            {
+                _fileManager = new Lazy<FileManager>(() => new FileManager(
+                    modelMenu.ModelListBoxControl,
+                    modelMenu.SelectedModelNotifierControl,
+                    modelMenu.ConfigsListBoxControl,
+                    modelMenu.SelectedConfigNotifierControl));
+
+                try
+                {
+                    var fm = _fileManager.Value;
+                }
+                catch (Exception ex)
+                {
+                }
+            }
+        }
+
+        #endregion
+
+        #region Window Events
 
         private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => DragMove();
-
         private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+        private void Exit_Click(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            fileManager.InQuittingState = true;
+            if (_fileManager?.IsValueCreated == true)
+            {
+                fileManager.InQuittingState = true;
+            }
 
-            Dictionary.toggleState["Aim Assist"] = false;
-            Dictionary.toggleState["FOV"] = false;
-            Dictionary.toggleState["Show Detected Player"] = false;
+            DisableAllFeatures();
+            CloseWindows();
+            CleanupDrivers();
 
+            // Dispose menu controls to save their states
+            if (_menuControls["AimMenu"] is AimMenuControl aimMenu)
+                aimMenu.Dispose();
+
+            if (_menuControls["SettingsMenu"] is SettingsMenuControl settingsMenu)
+                settingsMenu.Dispose();
+
+            SaveAllConfigurations();
+            FileManager.AIManager?.Dispose();
+
+            // Clean up display manager
+            DisplayManager.DisplayChanged -= OnDisplayChanged;
+            DisplayManager.Dispose();
+
+            Application.Current.Shutdown();
+        }
+
+        private void DisableAllFeatures()
+        {
+            var features = new[] { "Aim Assist", "FOV", "Show Detected Player" };
+            foreach (var feature in features)
+            {
+                Dictionary.toggleState[feature] = false;
+            }
+        }
+
+        private void CloseWindows()
+        {
             FOVWindow.Close();
             DPWindow.Close();
+        }
 
-            if (Dictionary.dropdownState["Mouse Movement Method"] == "LG HUB")
+        private void CleanupDrivers()
+        {
+            if (Dictionary.dropdownState.TryGetValue("Mouse Movement Method", out var method) &&
+                method?.ToString() == "LG HUB")
             {
                 LGMouse.Close();
             }
+        }
+
+        private void SaveAllConfigurations()
+        {
+            Dictionary.colorState["Theme Color"] = ThemeManager.GetThemeColorHex();
 
             SaveDictionary.WriteJSON(Dictionary.sliderSettings);
             SaveDictionary.WriteJSON(Dictionary.minimizeState, "bin\\minimize.cfg");
@@ -149,869 +422,445 @@ namespace Aimmy2
             SaveDictionary.WriteJSON(Dictionary.colorState, "bin\\colors.cfg");
             SaveDictionary.WriteJSON(Dictionary.filelocationState, "bin\\filelocations.cfg");
             SaveDictionary.WriteJSON(Dictionary.AntiRecoilSettings, "bin\\anti_recoil_configs\\Default.cfg");
-
-            FileManager.AIManager?.Dispose();
-
-            Application.Current.Shutdown();
         }
 
-        private void Exit_Click(object sender, RoutedEventArgs e)
+        #endregion
+
+        #region Menu Management
+
+        private UserControl GetOrCreateMenuControl(string menuName)
         {
-            Application.Current.Shutdown();
+            if (_menuControls[menuName] != null)
+                return _menuControls[menuName]!;
+
+            var newControl = menuName == "ModelMenu" && _menuControls["ModelMenu"] != null
+                ? _menuControls["ModelMenu"]!
+                : CreateMenuControl(menuName);
+
+            _menuControls[menuName] = newControl;
+
+            if (!_menuInitialized[menuName])
+            {
+                InitializeMenuControl(menuName, newControl);
+                _menuInitialized[menuName] = true;
+            }
+
+            return newControl;
         }
 
-        #endregion Loading Window
+        private UserControl CreateMenuControl(string menuName) => menuName switch
+        {
+            "AimMenu" => new AimMenuControl(),
+            "ModelMenu" => new ModelMenuControl(),
+            "SettingsMenu" => new SettingsMenuControl(),
+            "AboutMenu" => new AboutMenuControl(),
+            _ => throw new ArgumentException($"Unknown menu: {menuName}")
+        };
 
-        #region Menu Logic
+        private void InitializeMenuControl(string menuName, UserControl control)
+        {
+            try
+            {
+                switch (control)
+                {
+                    case AimMenuControl aimMenu:
+                        aimMenu.Initialize(this);
+                        CurrentScrollViewer = aimMenu.AimMenuScrollViewer;
+                        break;
 
-        private string CurrentMenu = "AimMenu";
+                    case ModelMenuControl modelMenu:
+                        if (!_menuInitialized["ModelMenu"])
+                            modelMenu.Initialize(this);
+                        break;
+
+                    case SettingsMenuControl settingsMenu:
+                        settingsMenu.Initialize(this);
+                        LoadDropdownStates();
+                        break;
+
+                    case AboutMenuControl aboutMenu:
+                        aboutMenu.Initialize(this);
+                        UpdateAboutSpecs();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+            }
+        }
+
+        private void LoadMenu(string menuName)
+        {
+            var control = GetOrCreateMenuControl(menuName);
+            ContentArea.Children.Clear();
+            ContentArea.Children.Add(control);
+            _currentControl = control;
+            UpdateCurrentScrollViewer(menuName, control);
+        }
+
+        private void UpdateCurrentScrollViewer(string menuName, UserControl control)
+        {
+            CurrentScrollViewer = control switch
+            {
+                AimMenuControl aim => aim.AimMenuScrollViewer,
+                ModelMenuControl model => model.ModelMenuScrollViewer,
+                SettingsMenuControl settings => settings.SettingsMenuScrollViewer,
+                AboutMenuControl about => about.AboutMenuScrollViewer,
+                _ => CurrentScrollViewer
+            };
+        }
 
         private async void MenuSwitch(object sender, RoutedEventArgs e)
         {
-            if (sender is Button clickedButton && !CurrentlySwitching && CurrentMenu != clickedButton.Tag.ToString())
+            if (sender is not Button { Tag: string newMenuName } ||
+                !IsValidMenu(newMenuName) ||
+                _currentlySwitching ||
+                _currentMenu == newMenuName) return;
+
+            _currentlySwitching = true;
+
+            try
             {
-                CurrentlySwitching = true;
-                Animator.ObjectShift(TimeSpan.FromMilliseconds(350), MenuHighlighter, MenuHighlighter.Margin, clickedButton.Margin);
-                await SwitchScrollPanels(FindName(clickedButton.Tag.ToString()) as ScrollViewer ?? throw new NullReferenceException("Scrollpanel is null"));
-                CurrentMenu = clickedButton.Tag.ToString()!;
+                Animator.ObjectShift(
+                    TimeSpan.FromMilliseconds(150), // Fade between menu buttons
+                    MenuHighlighter,
+                    MenuHighlighter.Margin,
+                    ((Button)sender).Margin);
+
+                await SwitchToMenu(newMenuName);
+                _currentMenu = newMenuName;
+            }
+            catch (Exception ex)
+            {
+            }
+            finally
+            {
+                _currentlySwitching = false;
             }
         }
 
-        private async Task SwitchScrollPanels(ScrollViewer MovingScrollViewer)
+        private bool IsValidMenu(string? menuName) =>
+            !string.IsNullOrEmpty(menuName) && _menuControls.ContainsKey(menuName!);
+
+        private async Task SwitchToMenu(string menuName)
         {
-            MovingScrollViewer.Visibility = Visibility.Visible;
-            Animator.Fade(MovingScrollViewer);
-            Animator.ObjectShift(TimeSpan.FromMilliseconds(350), MovingScrollViewer, MovingScrollViewer.Margin, new Thickness(50, 50, 0, 0));
-
-            Animator.FadeOut(CurrentScrollViewer!);
-            Animator.ObjectShift(TimeSpan.FromMilliseconds(350), CurrentScrollViewer!, CurrentScrollViewer!.Margin, new Thickness(50, 450, 0, -400));
-            await Task.Delay(350);
-
-            CurrentScrollViewer.Visibility = Visibility.Collapsed;
-            CurrentScrollViewer = MovingScrollViewer;
-            CurrentlySwitching = false;
-        }
-
-        private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            UpdateVisibilityBasedOnSearchText((TextBox)sender, ModelStoreScroller);
-        }
-
-        private void CSearchBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            UpdateVisibilityBasedOnSearchText((TextBox)sender, ConfigStoreScroller);
-        }
-
-        private void UpdateVisibilityBasedOnSearchText(TextBox textBox, Panel panel)
-        {
-            string searchText = textBox.Text.ToLower();
-
-            foreach (ADownloadGateway item in panel.Children.OfType<ADownloadGateway>())
+            if (_currentControl != null)
             {
-                item.Visibility = item.Title.Content.ToString()?.ToLower().Contains(searchText) == true
-                    ? Visibility.Visible
-                    : Visibility.Collapsed;
+                Animator.FadeOut(_currentControl);
+                await Task.Delay(150); // Fade between menu content
+            }
+
+            LoadMenu(menuName);
+            Animator.Fade(_currentControl!);
+        }
+
+        #endregion
+
+        #region Toggle Actions
+
+        internal void Toggle_Action(string title)
+        {
+            var actions = new Dictionary<string, Action>
+            {
+                ["FOV"] = () =>
+                {
+                    FOVWindow.Visibility = GetToggleVisibility(title);
+                    // Force reposition when showing the window
+                    if (Dictionary.toggleState[title])
+                    {
+                        FOVWindow.ForceReposition();
+                    }
+                },
+                ["Show Detected Player"] = () =>
+                {
+                    ShowHideDPWindow();
+                    DPWindow.DetectedPlayerFocus.Visibility = GetToggleVisibility(title, true);
+                    // Force reposition when showing the window
+                    if (Dictionary.toggleState[title])
+                    {
+                        DPWindow.ForceReposition();
+                    }
+                },
+                ["Show AI Confidence"] = () => DPWindow.DetectedPlayerConfidence.Visibility = GetToggleVisibility(title, true),
+                ["Mouse Background Effect"] = () => { if (!Dictionary.toggleState[title]) RotaryGradient.Angle = 0; },
+                ["UI TopMost"] = () => Topmost = Dictionary.toggleState[title],
+                ["EMA Smoothening"] = () =>
+                {
+                    MouseManager.IsEMASmoothingEnabled = Dictionary.toggleState[title];
+                }
+            };
+
+            if (actions.TryGetValue(title, out var action))
+            {
+                action();
             }
         }
 
-        private void Main_Background_Gradient(object sender, MouseEventArgs e)
+        private Visibility GetToggleVisibility(string title, bool collapsed = false) =>
+            Dictionary.toggleState[title]
+                ? Visibility.Visible
+                : (collapsed ? Visibility.Collapsed : Visibility.Hidden);
+
+        private static void ShowHideDPWindow()
         {
-            if (Dictionary.toggleState["Mouse Background Effect"])
+            if (Dictionary.toggleState["Show Detected Player"])
             {
-                var mousePosition = WinAPICaller.GetCursorPosition();
-                var translatedMousePos = PointFromScreen(new Point(mousePosition.X, mousePosition.Y));
-
-                double targetAngle = Math.Atan2(translatedMousePos.Y - (MainBorder.ActualHeight * 0.5), translatedMousePos.X - (MainBorder.ActualWidth * 0.5)) * (180 / Math.PI);
-
-                double angleDifference = CalculateAngleDifference(targetAngle, 360, 180, 1);
-                currentGradientAngle = (currentGradientAngle + angleDifference + 360) % 360;
-                RotaryGradient.Angle = currentGradientAngle;
+                DPWindow.Show();
+                // Force reposition when showing
+                DPWindow.ForceReposition();
+            }
+            else
+            {
+                DPWindow.Hide();
             }
         }
 
-        private void LoadDropdownStates()
-        {
-            // Prediction Method Dropdown
-            uiManager.D_PredictionMethod!.DropdownBox.SelectedIndex = Dictionary.dropdownState["Prediction Method"] switch
-            {
-                "Shall0e's Prediction" => 1,
-                "wisethef0x's EMA Prediction" => 2,
-                _ => 0 // Default case if none of the above matches
-            };
+        #endregion
 
-            // Detection Area Type Dropdown
-            uiManager.D_DetectionAreaType!.DropdownBox.SelectedIndex = Dictionary.dropdownState["Detection Area Type"] switch
-            {
-                "Closest to Mouse" => 1,
-                // Add more cases as needed
-                _ => 0 // Default case
-            };
+        #region UI Helper Methods
 
-            // Aiming Boundaries Alignment Dropdown
-            uiManager.D_AimingBoundariesAlignment!.DropdownBox.SelectedIndex = Dictionary.dropdownState["Aiming Boundaries Alignment"] switch
-            {
-                "Top" => 1,
-                "Bottom" => 2,
-                _ => 0 // Default case if none of the above matches
-            };
-
-            // Mouse Movement Method Dropdown
-            uiManager.D_MouseMovementMethod!.DropdownBox.SelectedIndex = Dictionary.dropdownState["Mouse Movement Method"] switch
-            {
-                "SendInput" => 1,
-                "LG HUB" => 2,
-                "Razer Synapse (Require Razer Peripheral)" => 3,
-                "ddxoft Virtual Input Driver" => 4,
-                _ => 0 // Default case if none of the above matches
-            };
-        }
-
-        private AToggle AddToggle(StackPanel panel, string title)
-        {
-            var toggle = new AToggle(title);
-            toggleInstances[title] = toggle;
-
-            // Load Toggle State
-            (Dictionary.toggleState[title] ? (Action)(() => toggle.EnableSwitch()) : () => toggle.DisableSwitch())();
-
-            toggle.Reader.Click += (sender, e) =>
-            {
-                Dictionary.toggleState[title] = !Dictionary.toggleState[title];
-
-                UpdateToggleUI(toggle, Dictionary.toggleState[title]);
-
-                Toggle_Action(title);
-            };
-
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(toggle));
-            return toggle;
-        }
-
-        private void UpdateToggleUI(AToggle toggle, bool isEnabled)
+        public void UpdateToggleUI(AToggle toggle, bool isEnabled)
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
                 if (isEnabled)
-                {
                     toggle.EnableSwitch();
-                }
                 else
-                {
                     toggle.DisableSwitch();
-                }
             });
         }
 
-        private void Toggle_Action(string title)
+        public ComboBoxItem AddDropdownItem(ADropdown dropdown, string title)
         {
-            switch (title)
+            var dropdownitem = new ComboBoxItem
             {
-                case "FOV":
-                    FOVWindow.Visibility = Dictionary.toggleState[title] ? Visibility.Visible : Visibility.Hidden;
-                    break;
-
-                case "Show Detected Player":
-                    ShowHideDPWindow();
-                    DPWindow.DetectedPlayerFocus.Visibility = Dictionary.toggleState[title] ? Visibility.Visible : Visibility.Collapsed;
-                    break;
-
-                case "Show AI Confidence":
-                    DPWindow.DetectedPlayerConfidence.Visibility = Dictionary.toggleState[title] ? Visibility.Visible : Visibility.Collapsed;
-                    break;
-
-                case "Mouse Background Effect":
-                    if (!Dictionary.toggleState[title]) { RotaryGradient.Angle = 0; }
-                    break;
-
-                case "UI TopMost":
-                    Topmost = Dictionary.toggleState[title];
-                    break;
-
-                case "EMA Smoothening":
-                    MouseManager.IsEMASmoothingEnabled = Dictionary.toggleState[title];
-                    Debug.WriteLine(MouseManager.IsEMASmoothingEnabled);
-                    break;
-            }
-        }
-
-        private AKeyChanger AddKeyChanger(StackPanel panel, string title, string keybind)
-        {
-            var keyChanger = new AKeyChanger(title, keybind);
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(keyChanger));
-
-            keyChanger.Reader.Click += (sender, e) =>
-            {
-                keyChanger.KeyNotifier.Content = "...";
-                bindingManager.StartListeningForBinding(title);
-
-                // Event handler for setting the binding
-                Action<string, string>? bindingSetHandler = null;
-                bindingSetHandler = (bindingId, key) =>
-                {
-                    if (bindingId == title)
-                    {
-                        keyChanger.KeyNotifier.Content = key;
-                        Dictionary.bindingSettings[bindingId] = key;
-                        bindingManager.OnBindingSet -= bindingSetHandler; // Unsubscribe after setting
-
-                        keyChanger.KeyNotifier.Content = KeybindNameManager.ConvertToRegularKey(key);
-                    }
-                };
-
-                bindingManager.OnBindingSet += bindingSetHandler;
+                Content = title,
+                Foreground = new SolidColorBrush(Color.FromArgb(255, 0, 0, 0)),
+                FontFamily = TryFindResource("Atkinson Hyperlegible") as FontFamily
             };
-
-            return keyChanger;
-        }
-
-        // All Keybind Listening is moved to a seperate function because having it stored in "AddKeyChanger" was making these functions run several times.
-        // Nori
-        private void ListenForKeybinds()
-        {
-            bindingManager.OnBindingPressed += (bindingId) =>
-            {
-                switch (bindingId)
-                {
-                    case "Model Switch Keybind":
-                        if (Dictionary.toggleState["Enable Model Switch Keybind"])
-                        {
-                            if (!FileManager.CurrentlyLoadingModel)
-                            {
-                                if (ModelListBox.SelectedIndex >= 0 && ModelListBox.SelectedIndex < (ModelListBox.Items.Count - 1))
-                                {
-                                    ModelListBox.SelectedIndex += 1;
-                                }
-                                else
-                                {
-                                    ModelListBox.SelectedIndex = 0;
-                                }
-                            }
-                        }
-                        break;
-
-                    case "Dynamic FOV Keybind":
-                        if (Dictionary.toggleState["Dynamic FOV"])
-                        {
-                            Dictionary.sliderSettings["FOV Size"] = Dictionary.sliderSettings["Dynamic FOV Size"];
-                            Animator.WidthShift(TimeSpan.FromMilliseconds(500), FOVWindow.Circle, FOVWindow.Circle.ActualWidth, Dictionary.sliderSettings["Dynamic FOV Size"]);
-                            Animator.HeightShift(TimeSpan.FromMilliseconds(500), FOVWindow.Circle, FOVWindow.Circle.ActualHeight, Dictionary.sliderSettings["Dynamic FOV Size"]);
-                        }
-                        break;
-
-                    case "Emergency Stop Keybind":
-                        // Disable Aim Assist
-                        Dictionary.toggleState["Aim Assist"] = false;
-                        Dictionary.toggleState["Constant AI Tracking"] = false;
-                        Dictionary.toggleState["Auto Trigger"] = false;
-
-                        UpdateToggleUI(uiManager.T_AimAligner!, false);
-                        UpdateToggleUI(uiManager.T_ConstantAITracking!, false);
-                        UpdateToggleUI(uiManager.T_AutoTrigger!, false);
-                        new NoticeBar($"[Emergency Stop Keybind] Disabled all AI features.", 4000).Show();
-                        break;
-                    // Anti Recoil
-                    case "Anti Recoil Keybind":
-                        if (Dictionary.toggleState["Anti Recoil"])
-                        {
-                            arManager.IndependentMousePress = 0;
-                            arManager.HoldDownTimer.Start();
-                        }
-                        break;
-
-                    case "Disable Anti Recoil Keybind":
-                        if (Dictionary.toggleState["Anti Recoil"])
-                        {
-                            Dictionary.toggleState["Anti Recoil"] = false;
-                            UpdateToggleUI(uiManager.T_AntiRecoil!, false);
-                            new NoticeBar($"[Disable Anti Recoil Keybind] Disabled Anti-Recoil.", 4000).Show();
-                        }
-                        break;
-
-                    case "Gun 1 Key":
-                        if (Dictionary.toggleState["Enable Gun Switching Keybind"])
-                        {
-                            LoadAntiRecoilConfig(Dictionary.filelocationState["Gun 1 Config"], true);
-                        }
-                        break;
-
-                    case "Gun 2 Key":
-                        if (Dictionary.toggleState["Enable Gun Switching Keybind"])
-                        {
-                            LoadAntiRecoilConfig(Dictionary.filelocationState["Gun 2 Config"], true);
-                        }
-                        break;
-                }
-            };
-
-            bindingManager.OnBindingReleased += (bindingId) =>
-            {
-                switch (bindingId)
-                {
-                    case "Dynamic FOV Keybind":
-                        if (Dictionary.toggleState["Dynamic FOV"])
-                        {
-                            Dictionary.sliderSettings["FOV Size"] = ActualFOV;
-                            Animator.WidthShift(TimeSpan.FromMilliseconds(500), FOVWindow.Circle, FOVWindow.Circle.ActualWidth, ActualFOV);
-                            Animator.HeightShift(TimeSpan.FromMilliseconds(500), FOVWindow.Circle, FOVWindow.Circle.ActualHeight, ActualFOV);
-                        }
-                        break;
-                    // Anti Recoil
-                    case "Anti Recoil Keybind":
-                        if (Dictionary.toggleState["Anti Recoil"])
-                        {
-                            arManager.HoldDownTimer.Stop();
-                            arManager.IndependentMousePress = 0;
-                        }
-                        break;
-                }
-            };
-        }
-
-        private AColorChanger AddColorChanger(StackPanel panel, string title)
-        {
-            var colorChanger = new AColorChanger(title);
-            colorChanger.ColorChangingBorder.Background = (Brush)new BrushConverter().ConvertFromString(Dictionary.colorState[title]);
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(colorChanger));
-            return colorChanger;
-        }
-
-        private ASlider AddSlider(StackPanel panel, string title, string label, double frequency, double buttonsteps, double min, double max, bool For_Anti_Recoil = false)
-        {
-            var slider = new ASlider(title, label, buttonsteps)
-            {
-                Slider = { Minimum = min, Maximum = max, TickFrequency = frequency }
-            };
-
-            // Determine the correct settings dictionary based on the slider type
-            var settings = For_Anti_Recoil ? Dictionary.AntiRecoilSettings : Dictionary.sliderSettings;
-            slider.Slider.Value = settings.TryGetValue(title, out var value) ? value : min;
-
-            // Update the settings when the slider value changes
-            slider.Slider.ValueChanged += (s, e) => settings[title] = slider.Slider.Value;
-
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(slider));
-            return slider;
-        }
-
-        private ADropdown AddDropdown(StackPanel panel, string title)
-        {
-            var dropdown = new ADropdown(title, title);
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(dropdown));
-            return dropdown;
-        }
-
-        private AFileLocator AddFileLocator(StackPanel panel, string title, string filter = "All files (*.*)|*.*", string DLExtension = "")
-        {
-            var afilelocator = new AFileLocator(title, title, filter, DLExtension);
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(afilelocator));
-            return afilelocator;
-        }
-
-        private ComboBoxItem AddDropdownItem(ADropdown dropdown, string title)
-        {
-            var dropdownitem = new ComboBoxItem();
-            dropdownitem.Content = title;
-            dropdownitem.Foreground = new SolidColorBrush(Color.FromArgb(255, 0, 0, 0));
-            dropdownitem.FontFamily = TryFindResource("Atkinson Hyperlegible") as FontFamily;
 
             dropdownitem.Selected += (s, e) =>
             {
-                string? key = dropdown.DropdownTitle.Content?.ToString();
-                if (key != null) Dictionary.dropdownState[key] = title;
-                else throw new NullReferenceException("dropdown.DropdownTitle.Content.ToString() is null");
+                var key = dropdown.DropdownTitle.Content?.ToString()
+                    ?? throw new NullReferenceException("dropdown.DropdownTitle.Content.ToString() is null");
+                Dictionary.dropdownState[key] = title;
             };
 
-            Application.Current.Dispatcher.Invoke(() => dropdown.DropdownBox.Items.Add(dropdownitem));
+            dropdown.DropdownBox.Items.Add(dropdownitem);
             return dropdownitem;
         }
 
-        private ATitle AddTitle(StackPanel panel, string title, bool CanMinimize = false)
+        #endregion
+
+        #region Keybind Handling
+
+        private void ListenForKeybinds()
         {
-            var atitle = new ATitle(title, CanMinimize);
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(atitle));
-            return atitle;
+            bindingManager.OnBindingPressed += HandleKeybindPressed;
+            bindingManager.OnBindingReleased += HandleKeybindReleased;
         }
 
-        private APButton AddButton(StackPanel panel, string title)
+        private void HandleKeybindPressed(string bindingId)
         {
-            var button = new APButton(title);
-            Application.Current.Dispatcher.Invoke(() => panel.Children.Add(button));
-            return button;
+            var handlers = new Dictionary<string, Action>
+            {
+                ["Model Switch Keybind"] = HandleModelSwitch,
+                ["Dynamic FOV Keybind"] = () => ApplyDynamicFOV(true),
+                ["Emergency Stop Keybind"] = HandleEmergencyStop,
+                ["Anti Recoil Keybind"] = () => HandleAntiRecoil(true),
+                ["Disable Anti Recoil Keybind"] = DisableAntiRecoil,
+                ["Gun 1 Key"] = () => LoadGunConfig("Gun 1 Config"),
+                ["Gun 2 Key"] = () => LoadGunConfig("Gun 2 Config")
+            };
+
+            handlers.GetValueOrDefault(bindingId)?.Invoke();
         }
 
-        private void AddCredit(StackPanel panel, string name, string role) => Application.Current.Dispatcher.Invoke(() => panel.Children.Add(new ACredit(name, role)));
-
-        private void AddSeparator(StackPanel panel)
+        private void HandleKeybindReleased(string bindingId)
         {
-            Application.Current.Dispatcher.Invoke(() =>
+            var handlers = new Dictionary<string, Action>
             {
-                panel.Children.Add(new ARectangleBottom());
-                panel.Children.Add(new ASpacer());
-            });
+                ["Dynamic FOV Keybind"] = () => ApplyDynamicFOV(false),
+                ["Anti Recoil Keybind"] = () => HandleAntiRecoil(false)
+            };
+
+            handlers.GetValueOrDefault(bindingId)?.Invoke();
         }
 
-        #endregion Menu Logic
-
-        #region Menu Loading
-
-        private void LoadAimMenu()
+        private void HandleModelSwitch()
         {
-            #region Aim Assist
-
-            uiManager.AT_Aim = AddTitle(AimAssist, "Aim Assist", true);
-            uiManager.T_AimAligner = AddToggle(AimAssist, "Aim Assist");
-            uiManager.T_AimAligner.Reader.Click += (s, e) =>
-            {
-                if (Dictionary.toggleState["Aim Assist"] && Dictionary.lastLoadedModel == "N/A")
-                {
-                    Dictionary.toggleState["Aim Assist"] = false;
-                    UpdateToggleUI(uiManager.T_AimAligner, false);
-
-                    new NoticeBar("Please load a model first", 5000).Show();
-                }
-            };
-            uiManager.C_Keybind = AddKeyChanger(AimAssist, "Aim Keybind", Dictionary.bindingSettings["Aim Keybind"]);
-            uiManager.C_Keybind = AddKeyChanger(AimAssist, "Second Aim Keybind", Dictionary.bindingSettings["Second Aim Keybind"]);
-            uiManager.T_ConstantAITracking = AddToggle(AimAssist, "Constant AI Tracking");
-            uiManager.T_ConstantAITracking.Reader.Click += (s, e) =>
-            {
-                if (Dictionary.toggleState["Constant AI Tracking"] && Dictionary.lastLoadedModel == "N/A")
-                {
-                    Dictionary.toggleState["Constant AI Tracking"] = false;
-                    UpdateToggleUI(uiManager.T_ConstantAITracking, false);
-                }
-                else if (Dictionary.toggleState["Constant AI Tracking"])
-                {
-                    Dictionary.toggleState["Aim Assist"] = true;
-                    UpdateToggleUI(uiManager.T_AimAligner, true);
-                }
-            };
-            uiManager.T_Predictions = AddToggle(AimAssist, "Predictions");
-            uiManager.T_EMASmoothing = AddToggle(AimAssist, "EMA Smoothening");
-            uiManager.C_EmergencyKeybind = AddKeyChanger(AimAssist, "Emergency Stop Keybind", Dictionary.bindingSettings["Emergency Stop Keybind"]);
-            uiManager.T_EnableModelSwitchKeybind = AddToggle(AimAssist, "Enable Model Switch Keybind");
-            uiManager.C_ModelSwitchKeybind = AddKeyChanger(AimAssist, "Model Switch Keybind", Dictionary.bindingSettings["Model Switch Keybind"]);
-            AddSeparator(AimAssist);
-
-            #endregion Aim Assist
-
-            #region Config
-
-            uiManager.AT_AimConfig = AddTitle(AimConfig, "Aim Config", true);
-            uiManager.D_PredictionMethod = AddDropdown(AimConfig, "Prediction Method");
-
-            AddDropdownItem(uiManager.D_PredictionMethod, "Kalman Filter");
-            AddDropdownItem(uiManager.D_PredictionMethod, "Shall0e's Prediction");
-            AddDropdownItem(uiManager.D_PredictionMethod, "wisethef0x's EMA Prediction");
-
-            uiManager.D_DetectionAreaType = AddDropdown(AimConfig, "Detection Area Type");
-            uiManager.DDI_ClosestToCenterScreen = AddDropdownItem(uiManager.D_DetectionAreaType, "Closest to Center Screen");
-            uiManager.DDI_ClosestToCenterScreen.Selected += async (sender, e) =>
-            {
-                await Task.Delay(100);
-                await System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
-                FOVWindow.FOVStrictEnclosure.Margin = new Thickness(
-                Convert.ToInt16((WinAPICaller.ScreenWidth / 2) / WinAPICaller.scalingFactorX) - 320,
-                Convert.ToInt16((WinAPICaller.ScreenHeight / 2) / WinAPICaller.scalingFactorY) - 320,
-                0, 0));
-            };
-
-            AddDropdownItem(uiManager.D_DetectionAreaType, "Closest to Mouse");
-
-            uiManager.D_AimingBoundariesAlignment = AddDropdown(AimConfig, "Aiming Boundaries Alignment");
-
-            AddDropdownItem(uiManager.D_AimingBoundariesAlignment, "Center");
-            AddDropdownItem(uiManager.D_AimingBoundariesAlignment, "Top");
-            AddDropdownItem(uiManager.D_AimingBoundariesAlignment, "Bottom");
-
-            uiManager.S_MouseSensitivity = AddSlider(AimConfig, "Mouse Sensitivity (+/-)", "Sensitivity", 0.01, 0.01, 0.01, 1);
-            uiManager.S_MouseSensitivity.Slider.PreviewMouseLeftButtonUp += (sender, e) =>
-            {
-                if (uiManager.S_MouseSensitivity.Slider.Value >= 0.98) new NoticeBar("The Mouse Sensitivity you have set can cause Aimmy to be unable to aim, please decrease if you suffer from this problem", 10000).Show();
-                else if (uiManager.S_MouseSensitivity.Slider.Value <= 0.1) new NoticeBar("The Mouse Sensitivity you have set can cause Aimmy to be unstable to aim, please increase if you suffer from this problem", 10000).Show();
-            };
-            uiManager.S_MouseJitter = AddSlider(AimConfig, "Mouse Jitter", "Jitter", 1, 1, 0, 15);
-
-            uiManager.S_YOffset = AddSlider(AimConfig, "Y Offset (Up/Down)", "Offset", 1, 1, -150, 150);
-            uiManager.S_YOffsetPercent = AddSlider(AimConfig, "Y Offset (%)", "Percent", 1, 1, 0, 100);
-
-            uiManager.S_XOffset = AddSlider(AimConfig, "X Offset (Left/Right)", "Offset", 1, 1, -150, 150);
-            uiManager.S_XOffsetPercent = AddSlider(AimConfig, "X Offset (%)", "Percent", 1, 1, 0, 100);
-
-            uiManager.S_EMASmoothing = AddSlider(AimConfig, "EMA Smoothening", "Amount", 0.01, 0.01, 0.01, 1);
-
-            AddSeparator(AimConfig);
-
-            #endregion Config
-
-            #region Trigger Bot
-
-            uiManager.AT_TriggerBot = AddTitle(TriggerBot, "Auto Trigger", true);
-            uiManager.T_AutoTrigger = AddToggle(TriggerBot, "Auto Trigger");
-            uiManager.S_AutoTriggerDelay = AddSlider(TriggerBot, "Auto Trigger Delay", "Seconds", 0.01, 0.1, 0.01, 1);
-            AddSeparator(TriggerBot);
-
-            #endregion Trigger Bot
-
-            #region Anti Recoil
-
-            uiManager.AT_AntiRecoil = AddTitle(AntiRecoil, "Anti Recoil", true);
-            uiManager.T_AntiRecoil = AddToggle(AntiRecoil, "Anti Recoil");
-            uiManager.C_AntiRecoilKeybind = AddKeyChanger(AntiRecoil, "Anti Recoil Keybind", "Left");
-            uiManager.C_ToggleAntiRecoilKeybind = AddKeyChanger(AntiRecoil, "Disable Anti Recoil Keybind", "Oem6");
-            uiManager.S_HoldTime = AddSlider(AntiRecoil, "Hold Time", "Milliseconds", 1, 1, 1, 1000, true);
-            uiManager.B_RecordFireRate = AddButton(AntiRecoil, "Record Fire Rate");
-            uiManager.B_RecordFireRate.Reader.Click += (s, e) => new SetAntiRecoil(this).Show();
-            uiManager.S_FireRate = AddSlider(AntiRecoil, "Fire Rate", "Milliseconds", 1, 1, 1, 5000, true);
-            uiManager.S_YAntiRecoilAdjustment = AddSlider(AntiRecoil, "Y Recoil (Up/Down)", "Move", 1, 1, -1000, 1000, true);
-            uiManager.S_XAntiRecoilAdjustment = AddSlider(AntiRecoil, "X Recoil (Left/Right)", "Move", 1, 1, -1000, 1000, true);
-            AddSeparator(AntiRecoil);
-
-            #endregion Anti Recoil
-
-            #region Anti Recoil Config
-
-            // Anti-Recoil Config
-            uiManager.AT_AntiRecoilConfig = AddTitle(ARConfig, "Anti Recoil Config", true);
-            uiManager.T_EnableGunSwitchingKeybind = AddToggle(ARConfig, "Enable Gun Switching Keybind");
-            uiManager.B_SaveRecoilConfig = AddButton(ARConfig, "Save Anti Recoil Config");
-            uiManager.B_SaveRecoilConfig.Reader.Click += (s, e) =>
-            {
-                SaveFileDialog saveFileDialog = new SaveFileDialog();
-                saveFileDialog.InitialDirectory = $"{Directory.GetCurrentDirectory}\\bin\\anti_recoil_configs";
-                saveFileDialog.Filter = "Aimmy Style Recoil Config (*.cfg)|*.cfg";
-                if (saveFileDialog.ShowDialog() == true)
-                {
-                    SaveDictionary.WriteJSON(Dictionary.AntiRecoilSettings, saveFileDialog.FileName);
-                    new NoticeBar($"[Anti Recoil] Config has been saved to \"{saveFileDialog.FileName}\"", 2000).Show();
-                }
-            };
-            uiManager.C_Gun1Key = AddKeyChanger(ARConfig, "Gun 1 Key", "D1");
-            uiManager.AFL_Gun1Config = AddFileLocator(ARConfig, "Gun 1 Config", "Aimmy Style Recoil Config (*.cfg)|*.cfg", "\\bin\\anti_recoil_configs");
-            uiManager.C_Gun2Key = AddKeyChanger(ARConfig, "Gun 2 Key", "D2");
-            uiManager.AFL_Gun2Config = AddFileLocator(ARConfig, "Gun 2 Config", "Aimmy Style Recoil Config (*.cfg)|*.cfg", "\\bin\\anti_recoil_configs");
-
-            uiManager.B_LoadGun1Config = AddButton(ARConfig, "Load Gun 1 Config");
-            uiManager.B_LoadGun1Config.Reader.Click += (s, e) => LoadAntiRecoilConfig(Dictionary.filelocationState["Gun 1 Config"], true);
-            uiManager.B_LoadGun2Config = AddButton(ARConfig, "Load Gun 2 Config");
-            uiManager.B_LoadGun2Config.Reader.Click += (s, e) => LoadAntiRecoilConfig(Dictionary.filelocationState["Gun 2 Config"], true);
-            AddSeparator(ARConfig);
-
-            #endregion Anti Recoil Config
-
-            #region FOV Config
-
-            uiManager.AT_FOV = AddTitle(FOVConfig, "FOV Config", true);
-            uiManager.T_FOV = AddToggle(FOVConfig, "FOV");
-            uiManager.T_DynamicFOV = AddToggle(FOVConfig, "Dynamic FOV");
-            uiManager.C_DynamicFOV = AddKeyChanger(FOVConfig, "Dynamic FOV Keybind", Dictionary.bindingSettings["Dynamic FOV Keybind"]);
-            uiManager.CC_FOVColor = AddColorChanger(FOVConfig, "FOV Color");
-            uiManager.CC_FOVColor.ColorChangingBorder.Background = (Brush)new BrushConverter().ConvertFromString(Dictionary.colorState["FOV Color"]);
-            uiManager.CC_FOVColor.Reader.Click += (s, x) =>
-            {
-                System.Windows.Forms.ColorDialog colorDialog = new();
-                if (colorDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
-                    uiManager.CC_FOVColor.ColorChangingBorder.Background = new SolidColorBrush(Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B));
-                    Dictionary.colorState["FOV Color"] = Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B).ToString();
-                    PropertyChanger.PostColor(Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B));
-                }
-            };
-
-            uiManager.S_FOVSize = AddSlider(FOVConfig, "FOV Size", "Size", 1, 1, 10, 640);
-            uiManager.S_FOVSize.Slider.ValueChanged += (s, x) =>
-            {
-                double FovSize = uiManager.S_FOVSize.Slider.Value;
-                ActualFOV = FovSize;
-                PropertyChanger.PostNewFOVSize(ActualFOV);
-            };
-            uiManager.S_DynamicFOVSize = AddSlider(FOVConfig, "Dynamic FOV Size", "Size", 1, 1, 10, 640);
-            uiManager.S_DynamicFOVSize.Slider.ValueChanged += (s, x) =>
-            {
-                if (Dictionary.toggleState["Dynamic FOV"])
-                {
-                    PropertyChanger.PostNewFOVSize(uiManager.S_DynamicFOVSize.Slider.Value);
-                }
-            };
-            uiManager.S_EMASmoothing.Slider.ValueChanged += (s, x) =>
-            {
-                if (Dictionary.toggleState["EMA Smoothening"])
-                {
-                    MouseManager.smoothingFactor = uiManager.S_EMASmoothing.Slider.Value;
-                    Debug.WriteLine(MouseManager.smoothingFactor);
-                }
-            };
-            AddSeparator(FOVConfig);
-
-            #endregion FOV Config
-
-            #region ESP Config
-
-            uiManager.AT_DetectedPlayer = AddTitle(ESPConfig, "ESP Config", true);
-            uiManager.T_ShowDetectedPlayer = AddToggle(ESPConfig, "Show Detected Player");
-            uiManager.T_ShowAIConfidence = AddToggle(ESPConfig, "Show AI Confidence");
-            uiManager.T_ShowTracers = AddToggle(ESPConfig, "Show Tracers");
-            uiManager.CC_DetectedPlayerColor = AddColorChanger(ESPConfig, "Detected Player Color");
-            uiManager.CC_DetectedPlayerColor.ColorChangingBorder.Background = (Brush)new BrushConverter().ConvertFromString(Dictionary.colorState["Detected Player Color"]);
-            uiManager.CC_DetectedPlayerColor.Reader.Click += (s, x) =>
-            {
-                System.Windows.Forms.ColorDialog colorDialog = new();
-                if (colorDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
-                    uiManager.CC_DetectedPlayerColor.ColorChangingBorder.Background = new SolidColorBrush(Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B));
-                    Dictionary.colorState["Detected Player Color"] = Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B).ToString();
-                    PropertyChanger.PostDPColor(Color.FromArgb(colorDialog.Color.A, colorDialog.Color.R, colorDialog.Color.G, colorDialog.Color.B));
-                }
-            };
-
-            uiManager.S_DPFontSize = AddSlider(ESPConfig, "AI Confidence Font Size", "Size", 1, 1, 1, 30);
-            uiManager.S_DPFontSize.Slider.ValueChanged += (s, x) => PropertyChanger.PostDPFontSize((int)uiManager.S_DPFontSize.Slider.Value);
-
-            uiManager.S_DPCornerRadius = AddSlider(ESPConfig, "Corner Radius", "Radius", 1, 1, 0, 100);
-            uiManager.S_DPCornerRadius.Slider.ValueChanged += (s, x) => PropertyChanger.PostDPWCornerRadius((int)uiManager.S_DPCornerRadius.Slider.Value);
-
-            uiManager.S_DPBorderThickness = AddSlider(ESPConfig, "Border Thickness", "Thickness", 0.1, 1, 0.1, 10);
-            uiManager.S_DPBorderThickness.Slider.ValueChanged += (s, x) => PropertyChanger.PostDPWBorderThickness(uiManager.S_DPBorderThickness.Slider.Value);
-
-            uiManager.S_DPOpacity = AddSlider(ESPConfig, "Opacity", "Opacity", 0.1, 0.1, 0, 1);
-
-            AddSeparator(ESPConfig);
-
-            #endregion ESP Config
-        }
-
-        private void LoadSettingsMenu()
-        {
-            uiManager.AT_SettingsMenu = AddTitle(SettingsConfig, "Settings Menu", true);
-
-            uiManager.T_CollectDataWhilePlaying = AddToggle(SettingsConfig, "Collect Data While Playing");
-            uiManager.T_AutoLabelData = AddToggle(SettingsConfig, "Auto Label Data");
-            uiManager.D_MouseMovementMethod = AddDropdown(SettingsConfig, "Mouse Movement Method");
-            AddDropdownItem(uiManager.D_MouseMovementMethod, "Mouse Event");
-            AddDropdownItem(uiManager.D_MouseMovementMethod, "SendInput");
-            uiManager.DDI_LGHUB = AddDropdownItem(uiManager.D_MouseMovementMethod, "LG HUB");
-
-            uiManager.DDI_LGHUB.Selected += (sender, e) =>
-            {
-                if (!new LGHubMain().Load())
-                {
-                    SelectMouseEvent();
-                }
-            };
-
-            uiManager.DDI_RazerSynapse = AddDropdownItem(uiManager.D_MouseMovementMethod, "Razer Synapse (Require Razer Peripheral)");
-            uiManager.DDI_RazerSynapse.Selected += async (sender, e) =>
-            {
-                if (!await RZMouse.Load())
-                {
-                    SelectMouseEvent();
-                }
-            };
-            uiManager.DDI_ddxoft = AddDropdownItem(uiManager.D_MouseMovementMethod, "ddxoft Virtual Input Driver");
-            uiManager.DDI_ddxoft.Selected += async (sender, e) =>
-            {
-                if (!await DdxoftMain.Load())
-                {
-                    SelectMouseEvent();
-                }
-            };
-            uiManager.S_AIMinimumConfidence = AddSlider(SettingsConfig, "AI Minimum Confidence", "% Confidence", 1, 1, 1, 100);
-            uiManager.S_AIMinimumConfidence.Slider.PreviewMouseLeftButtonUp += (sender, e) =>
-            {
-                if (uiManager.S_AIMinimumConfidence.Slider.Value >= 95) new NoticeBar("The minimum confidence you have set for Aimmy to be too high and may be unable to detect players.", 10000).Show();
-                else if (uiManager.S_AIMinimumConfidence.Slider.Value <= 35) new NoticeBar("The minimum confidence you have set for Aimmy may be too low can cause false positives.", 10000).Show();
-            };
-            uiManager.T_MouseBackgroundEffect = AddToggle(SettingsConfig, "Mouse Background Effect");
-            uiManager.T_UITopMost = AddToggle(SettingsConfig, "UI TopMost");
-            uiManager.B_SaveConfig = AddButton(SettingsConfig, "Save Config");
-            uiManager.B_SaveConfig.Reader.Click += (s, e) => new ConfigSaver().ShowDialog();
-
-            AddSeparator(SettingsConfig);
-
-            // X/Y Percentage Adjustment Toggles
-            uiManager.AT_XYPercentageAdjustmentEnabler = AddTitle(XYPercentageEnablerMenu, "X/Y Percentage Adjustment", true);
-            uiManager.T_XAxisPercentageAdjustment = AddToggle(XYPercentageEnablerMenu, "X Axis Percentage Adjustment");
-            uiManager.T_YAxisPercentageAdjustment = AddToggle(XYPercentageEnablerMenu, "Y Axis Percentage Adjustment");
-            AddSeparator(XYPercentageEnablerMenu);
-
-            // ddxoft Menu
-            //AddTitle(SSP2, "ddxoft Configurator");
-            //uiManager.AFL_ddxoftDLLLocator = AddFileLocator(SSP2, "ddxoft DLL Location", "ddxoft dll (*.dll)|*.dll");
-            //AddSeparator(SSP2);
-        }
-
-        private void LoadCreditsMenu()
-        {
-            AddTitle(CreditsPanel, "Developers");
-            AddCredit(CreditsPanel, "Babyhamsta", "AI Logic");
-            AddCredit(CreditsPanel, "MarsQQ", "Design");
-            AddCredit(CreditsPanel, "Taylor", "Optimization, Cleanup");
-            AddSeparator(CreditsPanel);
-
-            AddTitle(CreditsPanel, "Contributors");
-            AddCredit(CreditsPanel, "Shall0e", "Prediction Method");
-            AddCredit(CreditsPanel, "wisethef0x", "EMA Prediction Method");
-            AddCredit(CreditsPanel, "whoswhip", "Bug fixes & EMA");
-            AddCredit(CreditsPanel, "HakaCat", "Idea for Auto Labelling Data");
-            AddCredit(CreditsPanel, "Themida", "LGHub check");
-            AddCredit(CreditsPanel, "Ninja", "MarsQQ's emotional support");
-            AddSeparator(CreditsPanel);
-
-            AddTitle(CreditsPanel, "Model Creators");
-            AddCredit(CreditsPanel, "Babyhamsta", "Universal, Phantom Forces");
-            AddCredit(CreditsPanel, "Natdog400", "AIO");
-            AddCredit(CreditsPanel, "Themida", "Arsenal, Strucid, Bad Business, Blade Ball, etc.");
-            AddCredit(CreditsPanel, "Hogthewog", "Da Hood, FN, etc.");
-            AddSeparator(CreditsPanel);
-        }
-
-        public async Task LoadStoreMenu()
-        {
-            try
-            {
-                Task models = FileManager.RetrieveAndAddFiles("https://api.github.com/repos/Babyhamsta/Aimmy/contents/models", "bin\\models", AvailableModels);
-                Task configs = FileManager.RetrieveAndAddFiles("https://api.github.com/repos/Babyhamsta/Aimmy/contents/configs", "bin\\configs", AvailableConfigs);
-
-                await Task.WhenAll(models, configs);
-            }
-            catch (Exception e)
-            {
-                new NoticeBar(e.Message, 10000).Show();
+            if (!Dictionary.toggleState["Enable Model Switch Keybind"] || FileManager.CurrentlyLoadingModel)
                 return;
+
+            if (_menuControls["ModelMenu"] is ModelMenuControl modelMenu)
+            {
+                var modelListBox = modelMenu.ModelListBoxControl;
+                modelListBox.SelectedIndex = (modelListBox.SelectedIndex >= 0 &&
+                    modelListBox.SelectedIndex < modelListBox.Items.Count - 1)
+                    ? modelListBox.SelectedIndex + 1
+                    : 0;
+            }
+        }
+
+        private void ApplyDynamicFOV(bool apply)
+        {
+            if (!Dictionary.toggleState["Dynamic FOV"]) return;
+
+            var targetSize = apply ? Convert.ToDouble(Dictionary.sliderSettings["Dynamic FOV Size"]) : ActualFOV;
+            Dictionary.sliderSettings["FOV Size"] = targetSize;
+
+            AnimateFOVSize(targetSize);
+        }
+
+        private void AnimateFOVSize(double targetSize)
+        {
+            var duration = TimeSpan.FromMilliseconds(500);
+            Animator.WidthShift(duration, FOVWindow.Circle, FOVWindow.Circle.ActualWidth, targetSize);
+            Animator.HeightShift(duration, FOVWindow.Circle, FOVWindow.Circle.ActualHeight, targetSize);
+        }
+
+        private void HandleEmergencyStop()
+        {
+            var features = new[] { "Aim Assist", "Constant AI Tracking", "Auto Trigger" };
+            var toggles = new[] { uiManager.T_AimAligner, uiManager.T_ConstantAITracking, uiManager.T_AutoTrigger };
+
+            for (int i = 0; i < features.Length; i++)
+            {
+                Dictionary.toggleState[features[i]] = false;
+                if (toggles[i] != null)
+                    UpdateToggleUI(toggles[i], false);
             }
 
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                DownloadGateway(ModelStoreScroller, AvailableModels, "models");
-                DownloadGateway(ConfigStoreScroller, AvailableConfigs, "configs");
-            });
+            new NoticeBar("[Emergency Stop Keybind] Disabled all AI features.", 4000).Show();
         }
 
-        private void DownloadGateway(StackPanel Scroller, HashSet<string> entries, string folder)
+        private void HandleAntiRecoil(bool start)
         {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                Scroller.Children.Clear();
+            if (!Dictionary.toggleState["Anti Recoil"]) return;
 
-                if (entries.Count > 0)
-                {
-                    foreach (var entry in entries)
-                    {
-                        ADownloadGateway gateway = new(entry, folder);
-                        Scroller.Children.Add(gateway);
-                    }
-                }
-                else
-                {
-                    LackOfConfigsText.Visibility = Visibility.Visible;
-                    LackOfModelsText.Visibility = Visibility.Visible;
-                }
-            });
+            if (start)
+            {
+                arManager.IndependentMousePress = 0;
+                arManager.HoldDownTimer.Start();
+            }
+            else
+            {
+                arManager.HoldDownTimer.Stop();
+                arManager.IndependentMousePress = 0;
+            }
         }
 
-        #endregion Menu Loading
-
-        #region Menu Minizations
-
-        private void ToggleAimMenu() => SetMenuVisibility(AimAssist, !Dictionary.minimizeState["Aim Assist"]);
-
-        private void ToggleAimConfig() => SetMenuVisibility(AimConfig, !Dictionary.minimizeState["Aim Config"]);
-
-        private void ToggleAutoTrigger() => SetMenuVisibility(TriggerBot, !Dictionary.minimizeState["Auto Trigger"]);
-
-        private void ToggleAntiRecoilMenu() => SetMenuVisibility(AntiRecoil, !Dictionary.minimizeState["Anti Recoil"]);
-
-        private void ToggleAntiRecoilConfigMenu() => SetMenuVisibility(ARConfig, !Dictionary.minimizeState["Anti Recoil Config"]);
-
-        private void ToggleFOVConfigMenu() => SetMenuVisibility(FOVConfig, !Dictionary.minimizeState["FOV Config"]);
-
-        private void ToggleESPConfigMenu() => SetMenuVisibility(ESPConfig, !Dictionary.minimizeState["ESP Config"]);
-
-        private void ToggleSettingsMenu() => SetMenuVisibility(SettingsConfig, !Dictionary.minimizeState["Settings Menu"]);
-
-        private void ToggleXYPercentageAdjustmentEnabler() => SetMenuVisibility(XYPercentageEnablerMenu, !Dictionary.minimizeState["X/Y Percentage Adjustment"]);
-
-        private void LoadMenuMinimizers()
+        private void DisableAntiRecoil()
         {
-            ToggleAimMenu();
-            ToggleAimConfig();
-            ToggleAutoTrigger();
-            ToggleAntiRecoilMenu();
-            ToggleAntiRecoilConfigMenu();
-            ToggleFOVConfigMenu();
-            ToggleESPConfigMenu();
-            ToggleSettingsMenu();
-            ToggleXYPercentageAdjustmentEnabler();
+            if (!Dictionary.toggleState["Anti Recoil"]) return;
 
-            uiManager.AT_Aim.Minimize.Click += (s, e) => ToggleAimMenu();
-
-            uiManager.AT_AimConfig.Minimize.Click += (s, e) => ToggleAimConfig();
-
-            uiManager.AT_TriggerBot.Minimize.Click += (s, e) => ToggleAutoTrigger();
-
-            uiManager.AT_AntiRecoil.Minimize.Click += (s, e) => ToggleAntiRecoilMenu();
-
-            uiManager.AT_AntiRecoilConfig.Minimize.Click += (s, e) => ToggleAntiRecoilConfigMenu();
-
-            uiManager.AT_FOV.Minimize.Click += (s, e) => ToggleFOVConfigMenu();
-
-            uiManager.AT_DetectedPlayer.Minimize.Click += (s, e) => ToggleESPConfigMenu();
-
-            uiManager.AT_SettingsMenu.Minimize.Click += (s, e) => ToggleSettingsMenu();
-
-            uiManager.AT_XYPercentageAdjustmentEnabler.Minimize.Click += (s, e) => ToggleXYPercentageAdjustmentEnabler();
+            Dictionary.toggleState["Anti Recoil"] = false;
+            UpdateToggleUI(uiManager.T_AntiRecoil!, false);
+            new NoticeBar("[Disable Anti Recoil Keybind] Disabled Anti-Recoil.", 4000).Show();
         }
 
-        private static void SetMenuVisibility(StackPanel panel, bool isVisible)
+        private void LoadGunConfig(string configKey)
         {
-            foreach (UIElement child in panel.Children)
+            if (Dictionary.toggleState["Enable Gun Switching Keybind"])
             {
-                if (!(child is ATitle || child is ASpacer || child is ARectangleBottom))
+                if (Dictionary.filelocationState.TryGetValue(configKey, out var configPath))
                 {
-                    child.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
-                }
-                else
-                {
-                    child.Visibility = Visibility.Visible;
+                    LoadAntiRecoilConfig(configPath.ToString(), true);
                 }
             }
         }
 
-        #endregion Menu Minizations
+        #endregion
 
-        #region Config Loader
+        #region UI Effects
+
+        private void Main_Background_Gradient(object sender, MouseEventArgs e)
+        {
+            if (!Dictionary.toggleState["Mouse Background Effect"]) return;
+
+            var mousePosition = WinAPICaller.GetCursorPosition();
+            var translatedMousePos = PointFromScreen(new Point(mousePosition.X, mousePosition.Y));
+
+            var targetAngle = Math.Atan2(
+                translatedMousePos.Y - (MainBorder.ActualHeight * 0.5),
+                translatedMousePos.X - (MainBorder.ActualWidth * 0.5)) * (180 / Math.PI);
+
+            _currentGradientAngle = CalculateSmoothedAngle(targetAngle);
+            RotaryGradient.Angle = _currentGradientAngle;
+        }
+
+        private double CalculateSmoothedAngle(double targetAngle)
+        {
+            const double fullCircle = 360;
+            const double halfCircle = 180;
+            const double clamp = 1;
+
+            var angleDifference = (targetAngle - _currentGradientAngle + fullCircle) % fullCircle;
+            if (angleDifference > halfCircle)
+                angleDifference -= fullCircle;
+
+            var clampedDifference = Math.Max(Math.Min(angleDifference, clamp), -clamp);
+            return (_currentGradientAngle + clampedDifference + fullCircle) % fullCircle;
+        }
+
+        #endregion
+
+        #region Configuration Management
+
+        private void LoadDropdownStates()
+        {
+            if (_menuControls["SettingsMenu"] == null || !_menuInitialized["SettingsMenu"])
+                return;
+
+            var dropdownConfigs = new[]
+            {
+                (uiManager.D_PredictionMethod, "Prediction Method", new Dictionary<string, int>
+                {
+                    ["Shall0e's Prediction"] = 1,
+                    ["wisethef0x's EMA Prediction"] = 2
+                }),
+                (uiManager.D_DetectionAreaType, "Detection Area Type", new Dictionary<string, int>
+                {
+                    ["Closest to Mouse"] = 1
+                }),
+                (uiManager.D_AimingBoundariesAlignment, "Aiming Boundaries Alignment", new Dictionary<string, int>
+                {
+                    ["Top"] = 1,
+                    ["Bottom"] = 2
+                }),
+                (uiManager.D_MouseMovementMethod, "Mouse Movement Method", new Dictionary<string, int>
+                {
+                    ["SendInput"] = 1,
+                    ["LG HUB"] = 2,
+                    ["Razer Synapse (Require Razer Peripheral)"] = 3,
+                    ["ddxoft Virtual Input Driver"] = 4
+                })
+            };
+
+            foreach (var (dropdown, _, mappings) in dropdownConfigs)
+            {
+                if (dropdown == null) continue;
+
+                var dropdownKey = dropdown.DropdownTitle.Content?.ToString();
+                if (dropdownKey != null && Dictionary.dropdownState.TryGetValue(dropdownKey, out var value))
+                {
+                    var stringValue = value?.ToString() ?? "";
+                    dropdown.DropdownBox.SelectedIndex = mappings.TryGetValue(stringValue, out int index) ? index : 0;
+                }
+            }
+        }
 
         private void LoadConfig(string path = "bin\\configs\\Default.cfg", bool loading_from_configlist = false)
         {
             SaveDictionary.LoadJSON(Dictionary.sliderSettings, path);
+
+            if (!loading_from_configlist || _menuControls["AimMenu"] == null || !_menuInitialized["AimMenu"])
+                return;
+
             try
             {
-                if (loading_from_configlist)
-                {
-                    if (Dictionary.sliderSettings["Suggested Model"] != "N/A" || Dictionary.sliderSettings["Suggested Model"] != "")
-                    {
-                        MessageBox.Show(
-                            "The creator of this model suggests you use this model:\n" +
-                            Dictionary.sliderSettings["Suggested Model"], "Suggested Model - Aimmy"
-                        );
-                    }
-
-                    uiManager.S_FireRate!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "Fire Rate", 1);
-
-                    uiManager.S_FOVSize!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "FOV Size", 640);
-
-                    uiManager.S_MouseSensitivity!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "Mouse Sensitivity (+/-)", 0.8);
-                    uiManager.S_MouseJitter!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "Mouse Jitter", 0);
-
-                    uiManager.S_YOffset!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "Y Offset (Up/Down)", 0);
-                    uiManager.S_XOffset!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "X Offset (Left/Right)", 0);
-
-                    uiManager.S_YOffsetPercent!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "Y Offset (%)", 0);
-                    uiManager.S_XOffsetPercent!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "X Offset (%)", 0);
-
-                    uiManager.S_AutoTriggerDelay!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "Auto Trigger Delay", .25);
-                    uiManager.S_AIMinimumConfidence!.Slider.Value = MainWindow.GetValueOrDefault(Dictionary.sliderSettings, "AI Minimum Confidence", 50);
-                }
+                ShowSuggestedModelIfSpecified();
+                ApplyConfigToSliders();
             }
             catch (Exception e)
             {
@@ -1019,119 +868,151 @@ namespace Aimmy2
             }
         }
 
-        #endregion Config Loader
-
-        #region Anti Recoil Config Loader
-
-        private void LoadAntiRecoilConfig(string path = "bin\\anti_recoil_configs\\Default.cfg", bool loading_outside_startup = false)
+        private void ShowSuggestedModelIfSpecified()
         {
-            if (File.Exists(path))
+            if (Dictionary.sliderSettings.TryGetValue("Suggested Model", out var model))
             {
-                SaveDictionary.LoadJSON(Dictionary.AntiRecoilSettings, path);
-                try
+                var suggestedModel = model?.ToString() ?? "N/A";
+                if (suggestedModel != "N/A" && !string.IsNullOrEmpty(suggestedModel))
                 {
-                    if (loading_outside_startup)
-                    {
-                        uiManager.S_HoldTime!.Slider.Value = Dictionary.AntiRecoilSettings["Hold Time"];
-
-                        uiManager.S_FireRate!.Slider.Value = Dictionary.AntiRecoilSettings["Fire Rate"];
-
-                        uiManager.S_YAntiRecoilAdjustment!.Slider.Value = Dictionary.AntiRecoilSettings["Y Recoil (Up/Down)"];
-                        uiManager.S_XAntiRecoilAdjustment!.Slider.Value = Dictionary.AntiRecoilSettings["X Recoil (Left/Right)"];
-                        new NoticeBar($"[Anti Recoil] Loaded \"{path}\"", 2000).Show();
-                    }
-                }
-                catch (Exception e)
-                {
-                    throw new Exception($"Error loading config, possibly outdated\n{e}");
+                    MessageBox.Show(
+                        $"The creator of this model suggests you use this model:\n{suggestedModel}",
+                        "Suggested Model - Aimmy");
                 }
             }
-            else
+        }
+
+        private void ApplyConfigToSliders()
+        {
+            var sliderConfigs = new[]
+            {
+                ("Fire Rate", uiManager.S_FireRate, 1.0),
+                ("FOV Size", uiManager.S_FOVSize, 640.0),
+                ("Mouse Sensitivity (+/-)", uiManager.S_MouseSensitivity, 0.8),
+                ("Mouse Jitter", uiManager.S_MouseJitter, 0.0),
+                ("Y Offset (Up/Down)", uiManager.S_YOffset, 0.0),
+                ("X Offset (Left/Right)", uiManager.S_XOffset, 0.0),
+                ("Y Offset (%)", uiManager.S_YOffsetPercent, 0.0),
+                ("X Offset (%)", uiManager.S_XOffsetPercent, 0.0),
+                ("Auto Trigger Delay", uiManager.S_AutoTriggerDelay, 0.25),
+                ("AI Minimum Confidence", uiManager.S_AIMinimumConfidence, 50.0)
+            };
+
+            ApplySliderValues(sliderConfigs, Dictionary.sliderSettings);
+        }
+
+        public void LoadAntiRecoilConfig(string path = "bin\\anti_recoil_configs\\Default.cfg", bool loading_outside_startup = false)
+        {
+            if (!File.Exists(path))
             {
                 new NoticeBar("[Anti Recoil] Config not found.", 5000).Show();
+                return;
             }
-        }
 
-        #endregion Anti Recoil Config Loader
+            SaveDictionary.LoadJSON(Dictionary.AntiRecoilSettings, path);
 
-        #region Open Folder
+            if (!loading_outside_startup || _menuControls["AimMenu"] == null || !_menuInitialized["AimMenu"])
+                return;
 
-        private void OpenFolderB_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is Button clickedButton)
+            try
             {
-                Process.Start("explorer.exe", Directory.GetCurrentDirectory() + "bin\\" + clickedButton.Tag.ToString());
+                ApplyAntiRecoilConfig();
+                new NoticeBar($"[Anti Recoil] Loaded \"{path}\"", 2000).Show();
             }
-        }
-
-        #endregion Open Folder
-
-        #region Menu Functions
-
-        private async void SelectMouseEvent()
-        {
-            await Task.Delay(500);
-            uiManager.D_MouseMovementMethod!.DropdownBox.SelectedIndex = 0;
-        }
-
-        private static T GetValueOrDefault<T>(Dictionary<string, T> dictionary, string key, T defaultValue)
-        {
-            if (dictionary.TryGetValue(key, out T? value))
+            catch (Exception e)
             {
-                //Debug.WriteLine($"Value: {value}, Dictionary: {key}");
-                return value;
-            }
-            else
-            {
-                //Debug.WriteLine($"Default: {defaultValue}, Dictionary: {key}");
-                return defaultValue;
+                throw new Exception($"Error loading config, possibly outdated\n{e}");
             }
         }
 
-        #endregion Menu Functions
+        private void ApplyAntiRecoilConfig()
+        {
+            var sliderConfigs = new[]
+            {
+                ("Hold Time", uiManager.S_HoldTime, 0.0),
+                ("Fire Rate", uiManager.S_FireRate, 1.0),
+                ("Y Recoil (Up/Down)", uiManager.S_YAntiRecoilAdjustment, 0.0),
+                ("X Recoil (Left/Right)", uiManager.S_XAntiRecoilAdjustment, 0.0)
+            };
+
+            ApplySliderValues(sliderConfigs, Dictionary.AntiRecoilSettings);
+        }
+
+        private void ApplySliderValues((string key, ASlider? slider, double defaultValue)[] configs, Dictionary<string, dynamic> source)
+        {
+            foreach (var (key, slider, defaultValue) in configs)
+            {
+                if (slider != null && source.TryGetValue(key, out var value))
+                {
+                    slider.Slider.Value = Convert.ToDouble(value);
+                }
+                else if (slider != null)
+                {
+                    slider.Slider.Value = defaultValue;
+                }
+            }
+        }
+
+        #endregion
 
         #region System Information
 
         private static string? GetProcessorName() => GetSpecs.GetSpecification("Win32_Processor", "Name");
-
         private static string? GetVideoControllerName() => GetSpecs.GetSpecification("Win32_VideoController", "Name");
-
         private static string? GetFormattedMemorySize()
         {
-            long totalMemorySize = long.Parse(GetSpecs.GetSpecification("CIM_OperatingSystem", "TotalVisibleMemorySize")!);
+            var totalMemorySize = long.Parse(GetSpecs.GetSpecification("CIM_OperatingSystem", "TotalVisibleMemorySize")!);
             return Math.Round(totalMemorySize / (1024.0 * 1024.0), 0).ToString();
         }
 
-        #endregion System Information
+        #endregion
 
-        #region Fancy UI Calculations
+        #region Unimplemented Methods (For Controls)
 
-        private double currentGradientAngle = 0;
+        public AToggle AddToggle(StackPanel panel, string title) =>
+            throw new NotImplementedException("Use control's internal implementation");
 
-        private double CalculateAngleDifference(double targetAngle, double fullCircle, double halfCircle, double clamp)
-        {
-            double angleDifference = (targetAngle - currentGradientAngle + fullCircle) % fullCircle;
-            if (angleDifference > halfCircle) { angleDifference -= fullCircle; }
-            return Math.Max(Math.Min(angleDifference, clamp), -clamp);
-        }
+        public AKeyChanger AddKeyChanger(StackPanel panel, string title, string keybind) =>
+            throw new NotImplementedException("Use control's internal implementation");
 
-        #endregion Fancy UI Calculations
+        public AColorChanger AddColorChanger(StackPanel panel, string title) =>
+            throw new NotImplementedException("Use control's internal implementation");
 
-        #region Window Handling
+        public ASlider AddSlider(StackPanel panel, string title, string label, double frequency, double buttonsteps, double min, double max, bool For_Anti_Recoil = false) =>
+            throw new NotImplementedException("Use control's internal implementation");
 
-        private static void ShowHideDPWindow()
-        {
-            if (!Dictionary.toggleState["Show Detected Player"]) { DPWindow.Hide(); }
-            else { DPWindow.Show(); }
-        }
+        public ADropdown AddDropdown(StackPanel panel, string title) =>
+            throw new NotImplementedException("Use control's internal implementation");
 
-        private async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
-        {
-            UpdateManager updateManager = new UpdateManager();
-            await updateManager.CheckForUpdate("v2.2.0");
-            updateManager.Dispose();
-        }
+        public AFileLocator AddFileLocator(StackPanel panel, string title, string filter = "All files (*.*)|*.*", string DLExtension = "") =>
+            throw new NotImplementedException("Use control's internal implementation");
 
-        #endregion Window Handling
+        #endregion
     }
+
+    #region Extension Methods
+
+    internal static class DictionaryExtensions
+    {
+        public static T GetValueOrDefault<T>(this Dictionary<string, T> dictionary, string key, T defaultValue) =>
+            dictionary.TryGetValue(key, out var value) ? value : defaultValue;
+
+        public static T GetValueOrDefault<T>(this Dictionary<string, dynamic> dictionary, string key, T defaultValue)
+        {
+            if (dictionary.TryGetValue(key, out var value))
+            {
+                try
+                {
+                    return (T)Convert.ChangeType(value, typeof(T));
+                }
+                catch
+                {
+                    return defaultValue;
+                }
+            }
+            return defaultValue;
+        }
+    }
+
+    #endregion
 }

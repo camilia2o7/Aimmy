@@ -5,7 +5,9 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:Ant="clr-namespace:AntWpf.Controls;assembly=AntWpf"
+        xmlns:theme="clr-namespace:Aimmy2.Theme"
         xmlns:local="clr-namespace:Visuality"
+        theme:ThemeBehavior.AutoRegister="True"
         mc:Ignorable="d"
         Title="Set Static FOV Positioning"
         Background="{x:Null}"
@@ -27,7 +29,8 @@
                                      StartPoint="0.5,0">
                     <GradientStop Color="#00000000"
                                   Offset="1" />
-                    <GradientStop Color="#FF120338"
+                    <GradientStop x:Name="TopGradientStop"
+                                  Color="#FF120338"
                                   Offset="0" />
                 </LinearGradientBrush>
             </Border.Background>
@@ -78,7 +81,8 @@
                     </LinearGradientBrush.RelativeTransform>
                     <GradientStop Color="Black"
                                   Offset="0.27" />
-                    <GradientStop Color="#FF120338"
+                    <GradientStop x:Name="ThemeGradientStop"
+                                  Color="#FF120338"
                                   Offset="1" />
                 </LinearGradientBrush>
             </Border.Background>
@@ -113,8 +117,8 @@
                          VerticalContentAlignment="Center"
                          TextChanged="BulletNumberTextbox_TextChanged" />
                 <Ant:Button x:Name="ConfirmB"
+                            Tag="Theme:Background"
                             BorderBrush="#FFD3ADF7"
-                            Background="#FF722ED1"
                             EffectBrush="#FFD3ADF7"
                             Content="Confirm"
                             HorizontalAlignment="Left"
@@ -129,8 +133,8 @@
                             Click="ConfirmB_Click"
                             Margin="64,0,0,20" />
                 <Ant:Button x:Name="TryAgainB"
+                            Tag="Theme:Background"
                             BorderBrush="#FFD3ADF7"
-                            Background="#7F722ED1"
                             EffectBrush="#FFD3ADF7"
                             Content="Try Again"
                             HorizontalAlignment="Left"
@@ -143,7 +147,8 @@
                             FontSize="12"
                             Foreground="White"
                             Click="TryAgainB_Click"
-                            Margin="139,94,0,0" />
+                            Margin="139,94,0,0"
+                            Opacity="0.5" />
             </Grid>
         </Border>
     </Grid>

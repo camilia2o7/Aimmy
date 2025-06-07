@@ -20,7 +20,6 @@ namespace Other
 
         private void HoldDownTimerTicker(object sender, EventArgs e)
         {
-            //Debug.WriteLine(Math.Abs(IndependentMousePress));
             IndependentMousePress += 1;
             if (IndependentMousePress >= Dictionary.AntiRecoilSettings["Hold Time"])
                 MouseManager.DoAntiRecoil();
