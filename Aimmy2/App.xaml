@@ -14,8 +14,6 @@
             <FontFamily x:Key="Atkinson Hyperlegible">pack://application:,,,/Graphics/Fonts/#Atkinson Hyperlegible</FontFamily>
             <FontFamily x:Key="Font Awesome 6 Brands">pack://application:,,,/Graphics/Fonts/#Font Awesome 6 Brands Regular</FontFamily>
 
-            <!-- Remove theme colors from here - they're now in ThemeResources.xaml -->
-
             <!--#region Material Main Hues  -->
             <SolidColorBrush x:Key="PrimaryHueLightBrush"
                              Color="White" />
