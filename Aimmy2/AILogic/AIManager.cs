@@ -5,16 +5,12 @@ using InputLogic;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Other;
-using SharpDX;
-using SharpDX.Direct3D11;
-using SharpDX.DXGI;
 using Supercluster.KDTree;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Windows;
 using Visuality;
 
@@ -168,7 +164,10 @@ namespace Aimmy2.AILogic
             DisplayManager.DisplayChanged += OnDisplayChanged;
 
             // Initialize DXGI capture for current display
-            _captureManager.InitializeDxgiDuplication();
+            if (Dictionary.dropdownState["Screen Capture Method"] == "DirectX")
+            {
+                _captureManager.InitializeDxgiDuplication();
+            }
 
             kalmanPrediction = new KalmanPrediction();
             wtfpredictionManager = new WiseTheFoxPrediction();
@@ -926,7 +925,7 @@ namespace Aimmy2.AILogic
             _onnxModel?.Dispose();
             _modeloptions?.Dispose();
             _bitmapBuffer = null;
-            _captureManager._screenCaptureBitmap?.Dispose();
+            _captureManager.screenCaptureBitmap?.Dispose();
         }
 
         public class Prediction
