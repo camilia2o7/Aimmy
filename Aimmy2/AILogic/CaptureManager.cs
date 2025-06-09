@@ -44,6 +44,11 @@ namespace AILogic
             {
                 var currentDisplay = DisplayManager.CurrentDisplay;
 
+                if (currentDisplay == null)
+                {
+                    throw new InvalidOperationException("No current display available. DisplayManager may not be initialized.");
+                }
+
                 using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
                 IDXGIOutput1? targetOutput1 = null;
                 IDXGIAdapter1? targetAdapter = null;
@@ -70,8 +75,8 @@ namespace AILogic
                                 outputDesc.DesktopCoordinates.Bottom - outputDesc.DesktopCoordinates.Top);
 
                             // Try different matching strategies
-                            bool nameMatch = outputDesc.DeviceName.TrimEnd('\0') == currentDisplay.DeviceName.TrimEnd('\0');
-                            bool boundsMatch = outputBounds.Equals(currentDisplay.Bounds);
+                            bool nameMatch = currentDisplay?.DeviceName != null && outputDesc.DeviceName.TrimEnd('\0') == currentDisplay.DeviceName.TrimEnd('\0');
+                            bool boundsMatch = currentDisplay?.Bounds != null && outputBounds.Equals(currentDisplay.Bounds);
 
                             // Try matching by bounds only as a fallback
                             if (boundsMatch)
