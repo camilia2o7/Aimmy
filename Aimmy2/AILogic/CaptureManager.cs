@@ -3,6 +3,7 @@ using SharpGen.Runtime;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
+using Visuality;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -14,6 +15,8 @@ namespace AILogic
     {
         #region Variables
         private string _currentCaptureMethod = ""; // Track current method
+        private bool _directXSupported = true; // Track DirectX support
+        private string _directXErrorMessage = ""; // Store error message for notification
 
         private const int IMAGE_SIZE = 640;
         public Bitmap? screenCaptureBitmap { get; private set; }
@@ -36,10 +39,87 @@ namespace AILogic
         private const int MAX_CONSECUTIVE_FAILURES = 5;
         #endregion
 
+        #region DirectX Support Check
+
+        private bool CheckDirectXSupport()
+        {
+            try
+            {
+                // Quick test to see if we can create a D3D11 device and use desktop duplication
+                using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+
+                // Try to get first adapter and output
+                if (factory.EnumAdapters1(0, out var testAdapter).Success)
+                {
+                    using (testAdapter)
+                    {
+                        if (testAdapter.EnumOutputs(0, out var testOutput).Success)
+                        {
+                            using (testOutput)
+                            {
+                                // Try to create a D3D11 device
+                                var result = D3D11.D3D11CreateDevice(
+                                    testAdapter,
+                                    DriverType.Unknown,
+                                    DeviceCreationFlags.None,
+                                    null,
+                                    out var testDevice);
+
+                                if (result.Success && testDevice != null)
+                                {
+                                    using (testDevice)
+                                    {
+                                        // Try to create desktop duplication
+                                        var output1 = testOutput.QueryInterface<IDXGIOutput1>();
+                                        try
+                                        {
+                                            using var testDuplication = output1.DuplicateOutput(testDevice);
+                                            return true; // DirectX Desktop Duplication is supported
+                                        }
+                                        catch (SharpGenException ex) when (ex.ResultCode == Vortice.DXGI.ResultCode.Unsupported)
+                                        {
+                                            _directXErrorMessage = "Desktop Duplication API not supported. This may be due to Windows version, virtual machine, or graphics driver limitations.";
+                                            return false;
+                                        }
+                                        finally
+                                        {
+                                            output1.Dispose();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _directXErrorMessage = "No suitable graphics adapter found for DirectX capture.";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _directXErrorMessage = $"DirectX initialization failed: {ex.Message}";
+                return false;
+            }
+        }
+        #endregion
+
         #region DirectX
-        public void InitializeDxgiDuplication()
+        public bool InitializeDxgiDuplication()
         {
             DisposeDxgiResources();
+
+            // Check DirectX support if not already checked or if previously failed
+            if (!_directXSupported)
+            {
+                _directXSupported = CheckDirectXSupport();
+                if (!_directXSupported)
+                {
+                    // Notify UI about DirectX status
+                    new NoticeBar($"DirectX capture not supported: {_directXErrorMessage}", 6000).Show();
+                    return false;
+                }
+            }
+
             try
             {
                 var currentDisplay = DisplayManager.CurrentDisplay;
@@ -151,10 +231,25 @@ namespace AILogic
 
                 // Reset failure counter on successful init
                 _consecutiveFailures = 0;
+                _directXSupported = true;
 
                 // Cleanup
                 targetAdapter.Dispose();
                 targetOutput1.Dispose();
+
+                return true;
+            }
+            catch (SharpGenException ex) when (ex.ResultCode == Vortice.DXGI.ResultCode.Unsupported)
+            {
+                Debug.WriteLine($"DirectX Desktop Duplication not supported: {ex.Message}");
+                _directXSupported = false;
+                _directXErrorMessage = "DirectX Desktop Duplication is not supported on this system. Falling back to GDI+ capture.";
+                DisposeDxgiResources();
+
+                // Notify UI about DirectX status
+                new NoticeBar("DirectX Desktop Duplication not supported. Switched to GDI+ capture.", 6000).Show();
+
+                return false;
             }
             catch (Exception ex)
             {
@@ -166,6 +261,12 @@ namespace AILogic
 
         private Bitmap? DirectX(Rectangle detectionBox)
         {
+            // Check if DirectX is supported
+            if (!_directXSupported)
+            {
+                return null; // Will fallback to GDI in ScreenGrab
+            }
+
             int w = detectionBox.Width;
             int h = detectionBox.Height;
 
@@ -174,7 +275,11 @@ namespace AILogic
                 // Check if we need to reinitialize
                 if (_dxDevice == null || _dxDevice.ImmediateContext == null || _deskDuplication == null)
                 {
-                    InitializeDxgiDuplication();
+                    if (!InitializeDxgiDuplication())
+                    {
+                        return null; // Will fallback to GDI
+                    }
+
                     if (_dxDevice == null || _dxDevice.ImmediateContext == null || _deskDuplication == null)
                     {
                         lock (_displayLock) { _displayChangesPending = true; }
@@ -343,6 +448,18 @@ namespace AILogic
                     desktopResource?.Dispose();
                 }
             }
+            catch (SharpGenException ex) when (ex.ResultCode == Vortice.DXGI.ResultCode.Unsupported)
+            {
+                // DirectX not supported - disable it and return null to trigger fallback
+                Debug.WriteLine($"DirectX not supported: {ex.Message}");
+                _directXSupported = false;
+                _directXErrorMessage = "DirectX capture not supported on this system.";
+
+                // Notify UI
+                new NoticeBar("DirectX capture not supported on this system. Switched to GDI+.", 6000).Show();
+
+                return null;
+            }
             catch (Exception e)
             {
                 Debug.WriteLine($"DirectX capture error: {e.Message}");
@@ -454,9 +571,10 @@ namespace AILogic
         public Bitmap? ScreenGrab(Rectangle detectionBox)
         {
             string selectedMethod = Dictionary.dropdownState["Screen Capture Method"];
+            bool methodChanged = selectedMethod != _currentCaptureMethod;
 
             // Handle method switch
-            if (selectedMethod != _currentCaptureMethod)
+            if (methodChanged)
             {
                 // Dispose bitmap when switching methods
                 screenCaptureBitmap?.Dispose();
@@ -468,20 +586,45 @@ namespace AILogic
                 {
                     DisposeDxgiResources();
                 }
-                else
+                else if (selectedMethod == "DirectX")
                 {
-                    InitializeDxgiDuplication();
+                    // Check DirectX support when switching to it
+                    _directXSupported = CheckDirectXSupport();
+                    if (_directXSupported)
+                    {
+                        InitializeDxgiDuplication();
+                    }
+                    else
+                    {
+                        // Force switch to GDI+ if DirectX not supported
+                        Dictionary.dropdownState["Screen Capture Method"] = "GDI+";
+                        _currentCaptureMethod = "GDI+";
+
+                        // Notify UI about the forced switch
+                        new NoticeBar($"DirectX not supported: {_directXErrorMessage} Using GDI+ instead.", 6000).Show();
+                    }
                 }
             }
 
-            if (selectedMethod == "DirectX")
+            if (selectedMethod == "DirectX" && _directXSupported)
             {
-                return DirectX(detectionBox);
+                var result = DirectX(detectionBox);
+                if (result != null)
+                {
+                    return result;
+                }
+
+                // If DirectX failed, fallback to GDI+
+                Debug.WriteLine("DirectX capture failed, falling back to GDI+");
+                Dictionary.dropdownState["Screen Capture Method"] = "GDI+";
+                _currentCaptureMethod = "GDI+";
+
+                // Notify about fallback
+                new NoticeBar("DirectX capture failed. Switched to GDI+ capture.", 5000).Show();
             }
-            else
-            {
-                return GDIScreen(detectionBox);
-            }
+
+            // Use GDI+ (either selected or as fallback)
+            return GDIScreen(detectionBox);
         }
     }
 }
