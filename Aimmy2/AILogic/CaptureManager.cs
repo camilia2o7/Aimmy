@@ -1,5 +1,4 @@
 ﻿using Aimmy2.Class;
-using Other; // For NoticeBar
 using SharpGen.Runtime;
 using System.Diagnostics;
 using System.Drawing;
