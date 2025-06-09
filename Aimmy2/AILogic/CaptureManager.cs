@@ -53,6 +53,8 @@ namespace AILogic
                     factory.EnumAdapters1(adapterIndex, out var adapter).Success;
                     adapterIndex++)
                 {
+                    Debug.WriteLine($"\nAdapter {adapterIndex}:");
+
                     for (uint outputIndex = 0;
                         adapter.EnumOutputs(outputIndex, out var output).Success;
                         outputIndex++)
@@ -67,9 +69,12 @@ namespace AILogic
                                 outputDesc.DesktopCoordinates.Right - outputDesc.DesktopCoordinates.Left,
                                 outputDesc.DesktopCoordinates.Bottom - outputDesc.DesktopCoordinates.Top);
 
-                            // Match by device name and bounds
-                            if (outputDesc.DeviceName.TrimEnd('\0') == currentDisplay.DeviceName.TrimEnd('\0') &&
-                                outputBounds.Equals(currentDisplay.Bounds))
+                            // Try different matching strategies
+                            bool nameMatch = outputDesc.DeviceName.TrimEnd('\0') == currentDisplay.DeviceName.TrimEnd('\0');
+                            bool boundsMatch = outputBounds.Equals(currentDisplay.Bounds);
+
+                            // Try matching by bounds only as a fallback
+                            if (boundsMatch)
                             {
                                 targetOutput1 = output1;
                                 targetAdapter = adapter;
@@ -85,16 +90,36 @@ namespace AILogic
                     adapter.Dispose();
                 }
 
-                // Fallback to first adapter/output if not found
+                // Fallback to specific display index if not found
                 if (targetOutput1 == null || targetAdapter == null)
                 {
-                    Debug.WriteLine("fell back to first adapter");
-                    factory.EnumAdapters1(0, out targetAdapter);
-                    if (targetAdapter != null)
+                    // Try to find by index
+                    int targetIndex = currentDisplay?.Index ?? 0;
+                    int currentIndex = 0;
+
+                    for (uint adapterIndex = 0;
+                        factory.EnumAdapters1(adapterIndex, out var adapter).Success;
+                        adapterIndex++)
                     {
-                        targetAdapter.EnumOutputs(0, out var output);
-                        targetOutput1 = output.QueryInterface<IDXGIOutput1>();
-                        output.Dispose();
+                        for (uint outputIndex = 0;
+                            adapter.EnumOutputs(outputIndex, out var output).Success;
+                            outputIndex++)
+                        {
+                            if (currentIndex == targetIndex)
+                            {
+                                Debug.WriteLine($"Found display at index {targetIndex}");
+                                targetOutput1 = output.QueryInterface<IDXGIOutput1>();
+                                targetAdapter = adapter;
+                                foundTarget = true;
+                                break;
+                            }
+                            currentIndex++;
+                            output.Dispose();
+                        }
+
+                        if (foundTarget)
+                            break;
+                        adapter.Dispose();
                     }
                 }
 
@@ -128,6 +153,7 @@ namespace AILogic
             }
             catch (Exception ex)
             {
+                Debug.WriteLine($"InitializeDxgiDuplication failed: {ex.Message}");
                 DisposeDxgiResources();
                 throw;
             }
@@ -217,15 +243,22 @@ namespace AILogic
                                                       DisplayManager.ScreenWidth,
                                                       DisplayManager.ScreenHeight);
 
-                    // Calculate the visible portion of the detection box
-                    int srcLeft = Math.Max(detectionBox.Left, displayBounds.Left);
-                    int srcTop = Math.Max(detectionBox.Top, displayBounds.Top);
-                    int srcRight = Math.Min(detectionBox.Right, displayBounds.Right);
-                    int srcBottom = Math.Min(detectionBox.Bottom, displayBounds.Bottom);
+                    // IMPORTANT: Convert absolute screen coordinates to display-relative coordinates
+                    // The duplicated output starts at (0,0), not at its screen position
+                    int relativeDetectionLeft = detectionBox.Left - DisplayManager.ScreenLeft;
+                    int relativeDetectionTop = detectionBox.Top - DisplayManager.ScreenTop;
+                    int relativeDetectionRight = relativeDetectionLeft + detectionBox.Width;
+                    int relativeDetectionBottom = relativeDetectionTop + detectionBox.Height;
+
+                    // Calculate the visible portion in display-relative coordinates
+                    int srcLeft = Math.Max(relativeDetectionLeft, 0);
+                    int srcTop = Math.Max(relativeDetectionTop, 0);
+                    int srcRight = Math.Min(relativeDetectionRight, DisplayManager.ScreenWidth);
+                    int srcBottom = Math.Min(relativeDetectionBottom, DisplayManager.ScreenHeight);
 
                     // Calculate where to place this in the destination bitmap
-                    int dstX = srcLeft - detectionBox.Left;
-                    int dstY = srcTop - detectionBox.Top;
+                    int dstX = srcLeft - relativeDetectionLeft;
+                    int dstY = srcTop - relativeDetectionTop;
 
                     // Only copy if there's a visible region
                     if (srcRight > srcLeft && srcBottom > srcTop)

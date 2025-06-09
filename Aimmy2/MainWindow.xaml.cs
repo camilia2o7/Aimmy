@@ -88,7 +88,15 @@ namespace Aimmy2
             {
                 InitializeMenus();
                 InitializeFileManagerEarly();
+
+                // Load configurations BEFORE loading any menus
+                // This ensures minimize states are loaded from file before menu initialization
+                await LoadConfigurationsAsync();
+
+                // Now load the initial menu - it will use the loaded minimize states
                 LoadInitialMenu();
+
+                // Continue with the rest of initialization
                 await InitializeApplicationAsync();
                 UpdateAboutSpecs();
                 ApplyThemeGradients();
@@ -133,9 +141,17 @@ namespace Aimmy2
             InitializeWindows();
 
             EnsureRequiredFiles();
-            await LoadConfigurationsAsync();
+
+            // Configuration loading has been moved to Window_Loaded before menu initialization
+            // Only load specific configurations that aren't related to UI state
+            await Task.Run(() =>
+            {
+                arManager.HoldDownLoad();
+                LoadConfig();
+                LoadAntiRecoilConfig();
+            });
+
             SetupKeybindings();
-            LoadDropdownStates();
             ConfigurePropertyChangers();
             ApplyInitialSettings();
             ListenForKeybinds();
@@ -466,6 +482,7 @@ namespace Aimmy2
                     case AimMenuControl aimMenu:
                         aimMenu.Initialize(this);
                         CurrentScrollViewer = aimMenu.AimMenuScrollViewer;
+                        LoadDropdownStates();
                         break;
 
                     case ModelMenuControl modelMenu:
@@ -642,7 +659,7 @@ namespace Aimmy2
             dropdownitem.Selected += (s, e) =>
             {
                 var key = dropdown.DropdownTitle.Content?.ToString()
-                    ?? throw new NullReferenceException("dropdown.DropdownTitle.Content.ToString() is null");
+                        ?? throw new NullReferenceException("dropdown.DropdownTitle.Content.ToString() is null");
                 Dictionary.dropdownState[key] = title;
             };
 
@@ -809,27 +826,31 @@ namespace Aimmy2
 
         private void LoadDropdownStates()
         {
-            if (_menuControls["SettingsMenu"] == null || !_menuInitialized["SettingsMenu"])
-                return;
 
             var dropdownConfigs = new[]
             {
+                // AimMenu dropdowns
                 (uiManager.D_PredictionMethod, "Prediction Method", new Dictionary<string, int>
                 {
+                    ["Kalman Filter"] = 0,
                     ["Shall0e's Prediction"] = 1,
                     ["wisethef0x's EMA Prediction"] = 2
                 }),
                 (uiManager.D_DetectionAreaType, "Detection Area Type", new Dictionary<string, int>
                 {
+                    ["Closest to Center Screen"] = 0,
                     ["Closest to Mouse"] = 1
                 }),
                 (uiManager.D_AimingBoundariesAlignment, "Aiming Boundaries Alignment", new Dictionary<string, int>
                 {
+                    ["Center"] = 0,
                     ["Top"] = 1,
                     ["Bottom"] = 2
                 }),
+                // SettingsMenu dropdowns
                 (uiManager.D_MouseMovementMethod, "Mouse Movement Method", new Dictionary<string, int>
                 {
+                    ["Mouse Event"] = 0,
                     ["SendInput"] = 1,
                     ["LG HUB"] = 2,
                     ["Razer Synapse (Require Razer Peripheral)"] = 3,
@@ -837,20 +858,30 @@ namespace Aimmy2
                 }),
                 (uiManager.D_ScreenCaptureMethod, "Screen Capture Method", new Dictionary<string, int>
                 {
-                    ["DirectX"] = 1,
-                    ["GDI+"] = 2
+                    ["DirectX"] = 0,
+                    ["GDI+"] = 1
                 })
             };
 
-            foreach (var (dropdown, _, mappings) in dropdownConfigs)
+            foreach (var (dropdown, key, mappings) in dropdownConfigs)
             {
-                if (dropdown == null) continue;
+                if (dropdown == null)
+                {
+                    continue;
+                }
 
-                var dropdownKey = dropdown.DropdownTitle.Content?.ToString();
-                if (dropdownKey != null && Dictionary.dropdownState.TryGetValue(dropdownKey, out var value))
+                if (Dictionary.dropdownState.TryGetValue(key, out var value))
                 {
                     var stringValue = value?.ToString() ?? "";
-                    dropdown.DropdownBox.SelectedIndex = mappings.TryGetValue(stringValue, out int index) ? index : 0;
+
+                    if (mappings.TryGetValue(stringValue, out int index))
+                    {
+                        dropdown.DropdownBox.SelectedIndex = index;
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"No mapping found for '{stringValue}'");
+                    }
                 }
             }
         }
