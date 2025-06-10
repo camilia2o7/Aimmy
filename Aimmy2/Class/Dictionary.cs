@@ -90,7 +90,8 @@ namespace Aimmy2.Class
             { "Detection Area Type", "Closest to Center Screen" },
             { "Aiming Boundaries Alignment", "Center" },
             { "Mouse Movement Method", "Mouse Event" },
-            { "Screen Capture Method", "DirectX" }
+            { "Screen Capture Method", "DirectX" },
+            { "Tracer Position", "Bottom" }
 
         };
 

@@ -93,9 +93,27 @@ namespace Visuality
                 // Maximize to cover entire display
                 this.WindowState = WindowState.Maximized;
 
-                // Update tracer start position (bottom center of current display)
+                // Update tracer start position (changed to be dynamic)
                 DetectedTracers.X1 = (DisplayManager.ScreenWidth / 2.0) / WinAPICaller.scalingFactorX;
-                DetectedTracers.Y1 = DisplayManager.ScreenHeight / WinAPICaller.scalingFactorY;
+
+                string tracerPosition = "Bottom"; // default value
+                if (Dictionary.dropdownState.TryGetValue("Tracer Position", out var position))
+                {
+                    tracerPosition = position.ToString();
+                }
+
+                switch (tracerPosition)
+                {
+                    case "Bottom":
+                        DetectedTracers.Y1 = DisplayManager.ScreenHeight / WinAPICaller.scalingFactorY;
+                        break;
+                    case "Middle":
+                        DetectedTracers.Y1 = (DisplayManager.ScreenHeight / 2.0) / WinAPICaller.scalingFactorY;
+                        break;
+                    case "Top":
+                        DetectedTracers.Y1 = 0;
+                        break;
+                }
 
                 // Force layout update
                 this.UpdateLayout();
