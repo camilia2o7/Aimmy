@@ -140,12 +140,13 @@
                                 </Border>
 
                                 <Slider x:Name="BrightnessSlider"
-                                        Minimum="0"
-                                        Maximum="1"
-                                        Value="1"
-                                        VerticalAlignment="Center"
-                                        ValueChanged="BrightnessSlider_ValueChanged"
-                                        Thumb.DragCompleted="BrightnessSlider_DragCompleted">
+                                    Minimum="0"
+                                    Maximum="1"
+                                    SmallChange="0.01"
+                                    LargeChange="0.1"
+                                    IsMoveToPointEnabled="True"
+                                    ValueChanged="BrightnessSlider_ValueChanged">
+
                                     <Slider.Style>
                                         <Style TargetType="Slider">
                                             <Setter Property="Template">

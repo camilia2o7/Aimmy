@@ -1,20 +1,25 @@
-﻿using System;
+﻿using Aimmy2.Theme;
+using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
-using Aimmy2.Theme;
 
 namespace Aimmy2.UILibrary
 {
     public partial class AColorWheel : UserControl
     {
+        public event Action<Color> ColorChanged;
+
+        private Color _initialColor;
+        public bool SuppressThemeApply { get; set; } = false;
         private bool _isMouseDown = false;
         private WriteableBitmap _colorWheelBitmap;
-        private Color _selectedColor = Color.FromRgb(114, 46, 209); // Default purple
-        private Color _previewColor = Color.FromRgb(114, 46, 209); // For live preview
+        private Color _selectedColor = Color.FromRgb(114, 46, 209);
+        private Color _previewColor = Color.FromRgb(114, 46, 209);
         private double _brightness = 1.0;
         private double _currentHue = 0;
         private double _currentSaturation = 0;
@@ -28,20 +33,28 @@ namespace Aimmy2.UILibrary
 
         private void AColorWheel_Loaded(object sender, RoutedEventArgs e)
         {
-            // Create the color wheel bitmap
             CreateColorWheel();
+            if (SuppressThemeApply)
+            {
+                _selectedColor = _initialColor;
+            }
+            else
+            {
+                _selectedColor = ThemeManager.ThemeColor;
+            }
 
-            // Load saved theme color
-            _selectedColor = ThemeManager.ThemeColor;
             _previewColor = _selectedColor;
             UpdateColorPreview(_previewColor);
-
-            // Position selector based on current color
             PositionSelectorForColor(_selectedColor);
-
-            // Update brightness gradient
             UpdateBrightnessGradient();
+            var thumb = (BrightnessSlider.Template.FindName("PART_Track", BrightnessSlider) as Track)?.Thumb;
+            if (thumb != null)
+            {
+                thumb.DragDelta += BrightnessSlider_DragDelta;
+            }
+
         }
+
 
         private void CreateColorWheel()
         {
@@ -54,22 +67,14 @@ namespace Aimmy2.UILibrary
             {
                 for (int x = 0; x < size; x++)
                 {
-                    // Calculate distance from center
                     double dx = x - size / 2.0;
                     double dy = y - size / 2.0;
                     double distance = Math.Sqrt(dx * dx + dy * dy);
-
-                    // Only draw within the circle
                     if (distance <= size / 2.0)
                     {
-                        // Calculate angle for hue (0-360)
                         double angle = Math.Atan2(dy, dx);
                         double hue = (angle + Math.PI) / (2 * Math.PI) * 360;
-
-                        // Calculate saturation based on distance from center
                         double saturation = distance / (size / 2.0);
-
-                        // Convert HSV to RGB with full brightness for the wheel
                         Color color = HsvToRgb(hue, saturation, 1.0);
 
                         int pixelOffset = (y * size + x) * 4;
@@ -80,7 +85,6 @@ namespace Aimmy2.UILibrary
                     }
                     else
                     {
-                        // Transparent outside the circle
                         int pixelOffset = (y * size + x) * 4;
                         pixels[pixelOffset + 3] = 0;
                     }
@@ -110,11 +114,12 @@ namespace Aimmy2.UILibrary
         {
             _isMouseDown = false;
             ColorWheelCanvas.ReleaseMouseCapture();
+            if (!SuppressThemeApply)
+            {
+                SaveThemeColor(_previewColor);
+            }
 
-            // Save the color using ThemeManager
-            SaveThemeColor(_previewColor);
         }
-
         private void UpdateColorFromPosition(Point position)
         {
             double centerX = ColorWheelCanvas.Width / 2;
@@ -123,8 +128,6 @@ namespace Aimmy2.UILibrary
             double dx = position.X - centerX;
             double dy = position.Y - centerY;
             double distance = Math.Sqrt(dx * dx + dy * dy);
-
-            // Constrain to circle
             if (distance > centerX)
             {
                 double angle = Math.Atan2(dy, dx);
@@ -132,28 +135,31 @@ namespace Aimmy2.UILibrary
                 dy = Math.Sin(angle) * centerX;
                 distance = centerX;
             }
-
-            // Update selector position
-            Canvas.SetLeft(ColorSelector, centerX + dx - 10); // Adjusted for new selector size
+            Canvas.SetLeft(ColorSelector, centerX + dx - 10);
             Canvas.SetTop(ColorSelector, centerY + dy - 10);
-
-            // Calculate color
             _currentHue = (Math.Atan2(dy, dx) + Math.PI) / (2 * Math.PI) * 360;
             _currentSaturation = distance / centerX;
-
             _previewColor = HsvToRgb(_currentHue, _currentSaturation, _brightness);
-
-            // Update preview
             UpdateColorPreview(_previewColor);
-
-            // Update brightness gradient
             UpdateBrightnessGradient();
-
-            // Update the selector dot color
             if (ColorDot != null)
             {
                 ColorDot.Fill = new SolidColorBrush(_previewColor);
             }
+
+            _previewColor = HsvToRgb(_currentHue, _currentSaturation, _brightness);
+            UpdateColorPreview(_previewColor);
+            UpdateBrightnessGradient();
+            if (ColorDot != null)
+            {
+                ColorDot.Fill = new SolidColorBrush(_previewColor);
+            }
+
+            if (!SuppressThemeApply)
+            {
+                SaveThemeColor(_previewColor);
+            }
+
         }
 
         private void BrightnessSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -161,36 +167,46 @@ namespace Aimmy2.UILibrary
             if (BrightnessSlider != null && !_isUpdatingFromCode)
             {
                 _brightness = BrightnessSlider.Value;
-
-                // Recalculate color with new brightness
                 _previewColor = HsvToRgb(_currentHue, _currentSaturation, _brightness);
-
-                // Update preview
                 UpdateColorPreview(_previewColor);
 
-                // Update the selector dot color
                 if (ColorDot != null)
                 {
                     ColorDot.Fill = new SolidColorBrush(_previewColor);
                 }
+                ColorChanged?.Invoke(_previewColor);
+                if (!SuppressThemeApply)
+                {
+                    SaveThemeColor(_previewColor);
+                }
             }
         }
 
-        private void BrightnessSlider_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+        private void BrightnessSlider_DragDelta(object sender, DragDeltaEventArgs e)
         {
-            // Save the color when brightness slider is released
-            SaveThemeColor(_previewColor);
+            _brightness = BrightnessSlider.Value;
+            _previewColor = HsvToRgb(_currentHue, _currentSaturation, _brightness);
+            UpdateColorPreview(_previewColor);
+
+            if (ColorDot != null)
+            {
+                ColorDot.Fill = new SolidColorBrush(_previewColor);
+            }
+
+            ColorChanged?.Invoke(_previewColor);
+
+            if (!SuppressThemeApply)
+            {
+                SaveThemeColor(_previewColor);
+            }
         }
 
         private void UpdateColorPreview(Color color)
         {
-            // Update the preview circle
             if (ColorPreview != null)
             {
                 ColorPreview.Fill = new SolidColorBrush(color);
             }
-
-            // Update hex value
             if (HexValue != null)
             {
                 HexValue.Content = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
@@ -199,63 +215,37 @@ namespace Aimmy2.UILibrary
 
         private void UpdateBrightnessGradient()
         {
-            // Update the brightness slider gradient to show the color range
             if (BrightnessGradientStart != null && BrightnessGradientEnd != null)
             {
-                // Start with black
                 BrightnessGradientStart.Color = Color.FromRgb(0, 0, 0);
-
-                // End with the full brightness color
                 BrightnessGradientEnd.Color = HsvToRgb(_currentHue, _currentSaturation, 1.0);
             }
         }
-
         private void SaveThemeColor(Color color)
         {
-            // Update selected color
             _selectedColor = color;
-
-            // Use ThemeManager to set and save the color
             ThemeManager.SetThemeColor(color);
-
-            // Save to settings (implement your settings save logic here)
             string hexColor = ThemeManager.GetThemeColorHex();
-            // Settings.SaveThemeColor(hexColor);
         }
-
         private void PositionSelectorForColor(Color color)
         {
             _isUpdatingFromCode = true;
-
-            // Convert RGB to HSV to find position
             double h, s, v;
             RgbToHsv(color, out h, out s, out v);
-
-            // Store current values
             _currentHue = h;
             _currentSaturation = s;
             _brightness = v;
-
-            // Calculate position from HSV
             double angle = h * Math.PI / 180.0 - Math.PI;
             double radius = s * (ColorWheelCanvas.Width / 2);
-
             double x = ColorWheelCanvas.Width / 2 + Math.Cos(angle) * radius;
             double y = ColorWheelCanvas.Height / 2 + Math.Sin(angle) * radius;
-
             Canvas.SetLeft(ColorSelector, x - 10);
             Canvas.SetTop(ColorSelector, y - 10);
-
-            // Set brightness slider
             BrightnessSlider.Value = v;
-
-            // Update selector dot color
             if (ColorDot != null)
             {
                 ColorDot.Fill = new SolidColorBrush(color);
             }
-
-            // Update brightness gradient
             UpdateBrightnessGradient();
 
             _isUpdatingFromCode = false;
@@ -268,22 +258,16 @@ namespace Aimmy2.UILibrary
                 Color color = (Color)ColorConverter.ConvertFromString(hexColor);
                 _selectedColor = color;
                 _previewColor = color;
-
-                // Update UI
                 UpdateColorPreview(color);
                 PositionSelectorForColor(color);
-
-                // Apply theme
                 ThemeManager.SetThemeColor(color);
             }
             catch
             {
-                // If parsing fails, keep default color
             }
         }
 
         #region Color Conversion Methods
-
         private Color HsvToRgb(double hue, double saturation, double value)
         {
             int hi = (int)(hue / 60) % 6;
@@ -311,21 +295,14 @@ namespace Aimmy2.UILibrary
             double r = color.R / 255.0;
             double g = color.G / 255.0;
             double b = color.B / 255.0;
-
             double max = Math.Max(r, Math.Max(g, b));
             double min = Math.Min(r, Math.Min(g, b));
             double delta = max - min;
-
-            // Value
             value = max;
-
-            // Saturation
             if (max == 0)
                 saturation = 0;
             else
                 saturation = delta / max;
-
-            // Hue
             if (delta == 0)
             {
                 hue = 0;
@@ -348,5 +325,20 @@ namespace Aimmy2.UILibrary
         }
 
         #endregion
+        public Color GetCurrentPreviewColor()
+        {
+            if (ColorPreview.Fill is SolidColorBrush brush)
+            {
+                return brush.Color;
+            }
+            return Colors.Transparent;
+        }
+        public void SetInitialColor(Color color)
+        {
+            _initialColor = color;
+        }
+
+
+
     }
 }

@@ -65,6 +65,7 @@ namespace Aimmy2.Class
             { "LG HUB Mouse Movement", false },
             { "Mouse Background Effect", true },
             { "UI TopMost", false },
+            { "StreamGuard", false },
             { "X Axis Percentage Adjustment", false },
             { "Y Axis Percentage Adjustment", false }
         };
@@ -90,8 +91,7 @@ namespace Aimmy2.Class
             { "Detection Area Type", "Closest to Center Screen" },
             { "Aiming Boundaries Alignment", "Center" },
             { "Mouse Movement Method", "Mouse Event" },
-            { "Screen Capture Method", "DirectX" },
-            { "Tracer Position", "Bottom" }
+            { "Screen Capture Method", "DirectX" }
 
         };
 

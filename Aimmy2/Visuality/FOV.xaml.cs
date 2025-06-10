@@ -106,14 +106,21 @@ namespace Visuality
             }
         }
 
-        private void UpdateFOVColor(Color NewColor) => Circle.Stroke = new SolidColorBrush(NewColor);
-
-        private void UpdateFOVSize(double newdouble)
+        private void UpdateFOVColor(Color newColor)
         {
-            Circle.Width = Circle.Height = newdouble;
+            var brush = new SolidColorBrush(newColor);
+            Circle.Stroke = brush;
+            RectangleShape.Stroke = brush;
         }
 
-        // Clean up event subscription
+
+        public void UpdateFOVSize(double newdouble)
+        {
+            Circle.Width = Circle.Height = newdouble;
+            RectangleShape.Width = RectangleShape.Height = newdouble;
+        }
+
+
         protected override void OnClosed(EventArgs e)
         {
             DisplayManager.DisplayChanged -= OnDisplayChanged;

@@ -70,7 +70,7 @@ namespace Class
 
         // FOV
         public ATitle? AT_FOV { get; set; }
-
+        public ADropdown D_FOVSTYLE { get; set; }
         public AToggle? T_FOV { get; set; }
 
         public AToggle? T_DynamicFOV { get; set; }
@@ -81,12 +81,11 @@ namespace Class
 
         // Player Detection
         public ATitle? AT_DetectedPlayer { get; set; }
-
+        public ADropdown? D_AlignTracers { get; set; }
         public AToggle? T_ShowDetectedPlayer { get; set; }
 
         public AToggle? T_ShowAIConfidence { get; set; }
         public AToggle? T_ShowTracers { get; set; }
-        public ADropdown? D_TracerPosition { get; set; }
         public AColorChanger? CC_DetectedPlayerColor { get; set; }
         public ASlider? S_DPFontSize { get; set; }
         public ASlider? S_DPCornerRadius { get; set; }
@@ -104,6 +103,7 @@ namespace Class
         public ComboBoxItem? DDI_ddxoft { get; set; }
         public ASlider? S_AIMinimumConfidence { get; set; }
         public AToggle? T_MouseBackgroundEffect { get; set; }
+        public AToggle? T_StreamGuard {  get; set; }
         public AToggle? T_UITopMost { get; set; }
         public APButton? B_SaveConfig { get; set; }
         public APButton? B_Debug { get; set; }

@@ -1,14 +1,15 @@
-﻿using System.Diagnostics;
-using System.IO;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Media;
-using Aimmy2.Class;
+﻿using Aimmy2.Class;
 using Aimmy2.UILibrary;
 using Class;
 using InputLogic;
 using Microsoft.Win32;
 using Other;
+using System.Configuration;
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 using UILibrary;
 using Visuality;
 
@@ -16,6 +17,8 @@ namespace Aimmy2.Controls
 {
     public partial class AimMenuControl : UserControl
     {
+        UISections.ColorPicker colorPickerInstance = null;
+        UISections.ColorPicker fovColorPickerInstance = null;
         private MainWindow? _mainWindow;
         private bool _isInitialized;
 
@@ -379,11 +382,55 @@ namespace Aimmy2.Controls
                 .AddToggle("FOV", t => uiManager.T_FOV = t)
                 .AddToggle("Dynamic FOV", t => uiManager.T_DynamicFOV = t)
                 .AddKeyChanger("Dynamic FOV Keybind", k => uiManager.C_DynamicFOV = k)
+                .AddDropdown("FOV Style", d =>
+                {
+                    uiManager.D_FOVSTYLE = d;
+
+                    var circleItem = _mainWindow.AddDropdownItem(d, "Circle");
+                    var rectangleItem = _mainWindow.AddDropdownItem(d, "Rectangle");
+
+                    circleItem.Selected += (s, e) =>
+                    {
+                        MainWindow.FOVWindow.Circle.Visibility = Visibility.Visible;
+                        MainWindow.FOVWindow.RectangleShape.Visibility = Visibility.Collapsed;
+                    };
+
+                    rectangleItem.Selected += (s, e) =>
+                    {
+                        MainWindow.FOVWindow.Circle.Visibility = Visibility.Collapsed;
+                        MainWindow.FOVWindow.RectangleShape.Visibility = Visibility.Visible;
+                    };
+                })
                 .AddColorChanger("FOV Color", c =>
                 {
-                    uiManager.CC_FOVColor = c;
-                    c.Reader.Click += (s, e) => HandleColorChange(c, "FOV Color", PropertyChanger.PostColor);
+                    c.Reader.Click += (s, e) =>
+                    {
+                        if (fovColorPickerInstance != null && fovColorPickerInstance.IsVisible)
+                        {
+                            fovColorPickerInstance.Activate();
+                            return;
+                        }
+                        Color initialColor = Colors.White;
+                        if (c.Reader.Background is SolidColorBrush scb)
+                            initialColor = scb.Color;
+                        fovColorPickerInstance = new UISections.ColorPicker(initialColor);
+                        fovColorPickerInstance.ColorChanged += (color) =>
+                        {
+                            if (uiManager?.CC_FOVColor?.Reader != null)
+                            {
+                                uiManager.CC_FOVColor.Reader.Background = new SolidColorBrush(color);
+                            }
+
+                            PropertyChanger.PostColor(color);
+                        };
+                        fovColorPickerInstance.Closed += (sender, args) =>
+                        {
+                            fovColorPickerInstance = null;
+                        };
+                        fovColorPickerInstance.Show();
+                    };
                 })
+
                 .AddSlider("FOV Size", "Size", 1, 1, 10, 640, s =>
                 {
                     uiManager.S_FOVSize = s;
@@ -418,40 +465,43 @@ namespace Aimmy2.Controls
                 })
                 .AddToggle("Show Detected Player", t => uiManager.T_ShowDetectedPlayer = t)
                 .AddToggle("Show AI Confidence", t => uiManager.T_ShowAIConfidence = t)
-                .AddToggle("Show Tracers", t => uiManager.T_ShowTracers = t);
-
-            builder.AddDropdown("Tracer Position", d =>
-            {
-                d.DropdownBox.SelectedIndex = -1;
-                uiManager.D_TracerPosition = d;
-                _mainWindow.AddDropdownItem(d, "Bottom");
-                _mainWindow.AddDropdownItem(d, "Middle");
-                _mainWindow.AddDropdownItem(d, "Top");
-                d.DropdownBox.SelectionChanged += (s, e) =>
+                .AddToggle("Show Tracers", t => uiManager.T_ShowTracers = t)
+                .AddDropdown("Align Tracers", d =>
                 {
-                    if (Dictionary.toggleState["Show Detected Player"])
-                    {
-                        // simulate a click to turn it off - this is to force a reload of the ui cause tracer doesn't update otherwise - helz
-                        uiManager.T_ShowDetectedPlayer.Reader.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-                        // simulate a click to turn it back on - same as before ^ - helz
-                        uiManager.T_ShowDetectedPlayer.Reader.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-                    }
-                    else
-                    {
-                        if (Dictionary.DetectedPlayerOverlay != null)
-                        {
-                            Dictionary.DetectedPlayerOverlay.ForceReposition();
-                        }
-                    }
-                };
-            });
-
-            builder
-                .AddColorChanger("Detected Player Color", c =>
-                {
-                    uiManager.CC_DetectedPlayerColor = c;
-                    c.Reader.Click += (s, e) => HandleColorChange(c, "Detected Player Color", PropertyChanger.PostDPColor);
+                    uiManager.D_AlignTracers = d;
+                    _mainWindow.AddDropdownItem(d, "Default");
+                    _mainWindow.AddDropdownItem(d, "Center");
+                    _mainWindow.AddDropdownItem(d, "Top");
                 })
+                .AddColorChanger("Detected Player Color", c =>
+                 {
+                     c.Reader.Click += (s, e) =>
+                     {
+                         if (colorPickerInstance != null && colorPickerInstance.IsVisible)
+                         {
+                             colorPickerInstance.Activate();
+                             return;
+                         }
+                         Color initialColor = Colors.White;
+                         if (c.Reader.Background is SolidColorBrush scb)
+                             initialColor = scb.Color;
+                         colorPickerInstance = new UISections.ColorPicker(initialColor);
+                         colorPickerInstance.ColorChanged += (color) =>
+                         {
+                             if (uiManager?.CC_DetectedPlayerColor?.Reader != null)
+                             {
+                                 uiManager.CC_DetectedPlayerColor.Reader.Background = new SolidColorBrush(color);
+                             }
+                             PropertyChanger.PostDPColor(color);
+                         };
+                         colorPickerInstance.Closed += (sender, args) =>
+                         {
+                             colorPickerInstance = null;
+                         };
+
+                         colorPickerInstance.Show();
+                     };
+                 })
                 .AddSlider("AI Confidence Font Size", "Size", 1, 1, 1, 30, s =>
                 {
                     uiManager.S_DPFontSize = s;

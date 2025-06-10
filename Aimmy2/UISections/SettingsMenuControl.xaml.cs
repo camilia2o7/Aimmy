@@ -193,6 +193,7 @@ namespace Aimmy2.Controls
                 })
                 .AddToggle("Mouse Background Effect", t => uiManager.T_MouseBackgroundEffect = t)
                 .AddToggle("UI TopMost", t => uiManager.T_UITopMost = t)
+                .AddToggle("StreamGuard", t => uiManager.T_StreamGuard = t)
                 .AddButton("Save Config", b =>
                 {
                     uiManager.B_SaveConfig = b;
@@ -268,7 +269,7 @@ namespace Aimmy2.Controls
                 {
                     uiManager.AT_ThemeColorWheel = t;
                     t.Minimize.Click += (s, e) =>
-                        TogglePanel("Theme Settings", ThemeMenuPanel);
+                       TogglePanel("Theme Settings", ThemeMenuPanel);
                 })
                 .AddSeparator();
 
@@ -276,7 +277,7 @@ namespace Aimmy2.Controls
             uiManager.ThemeColorWheel = new AColorWheel();
 
             // Insert before separator
-            var insertIndex = ThemeMenu.Children.Count - 1;
+            var insertIndex = ThemeMenu.Children.Count - 2;
             ThemeMenu.Children.Insert(insertIndex, uiManager.ThemeColorWheel);
         }
 
