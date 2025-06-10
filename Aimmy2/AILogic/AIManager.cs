@@ -466,8 +466,49 @@ namespace Aimmy2.AILogic
                 DetectedPlayerOverlay.DetectedTracers.Opacity = showTracers ? 1 : 0;
                 if (showTracers)
                 {
-                    DetectedPlayerOverlay.DetectedTracers.X2 = centerX;
-                    DetectedPlayerOverlay.DetectedTracers.Y2 = centerY + LastDetectionBox.Height;
+                    var tracerPosition = Dictionary.dropdownState["Tracer Position"];
+
+                    var boxTop = centerY;
+                    var boxBottom = centerY + LastDetectionBox.Height;
+                    var boxHorizontalCenter = centerX;
+                    var boxVerticalCenter = centerY + (LastDetectionBox.Height / 2.0);
+                    var boxLeft = centerX - (LastDetectionBox.Width / 2.0);
+                    var boxRight = centerX + (LastDetectionBox.Width / 2.0);
+
+                    switch (tracerPosition)
+                    {
+                        case "Top":
+                            DetectedPlayerOverlay.DetectedTracers.X2 = boxHorizontalCenter;
+                            DetectedPlayerOverlay.DetectedTracers.Y2 = boxTop;
+                            break;
+
+                        case "Bottom":
+                            DetectedPlayerOverlay.DetectedTracers.X2 = boxHorizontalCenter;
+                            DetectedPlayerOverlay.DetectedTracers.Y2 = boxBottom;
+                            break;
+
+                        case "Middle":
+                            var screenHorizontalCenter = DisplayManager.ScreenWidth / (2.0 * WinAPICaller.scalingFactorX);
+                            if (boxHorizontalCenter < screenHorizontalCenter)
+                            {
+                                // if the box is on the left half of the screen, aim for the right-middle of the box
+                                DetectedPlayerOverlay.DetectedTracers.X2 = boxRight;
+                                DetectedPlayerOverlay.DetectedTracers.Y2 = boxVerticalCenter;
+                            }
+                            else
+                            {
+                                // if the box is on the right half, aim for the left-middle
+                                DetectedPlayerOverlay.DetectedTracers.X2 = boxLeft;
+                                DetectedPlayerOverlay.DetectedTracers.Y2 = boxVerticalCenter;
+                            }
+                            break;
+
+                        default:
+                            // default to the bottom-center if the setting is unrecognized
+                            DetectedPlayerOverlay.DetectedTracers.X2 = boxHorizontalCenter;
+                            DetectedPlayerOverlay.DetectedTracers.Y2 = boxBottom;
+                            break;
+                    }
                 }
 
                 DetectedPlayerOverlay.Opacity = Dictionary.sliderSettings["Opacity"];

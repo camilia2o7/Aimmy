@@ -86,6 +86,7 @@ namespace Class
 
         public AToggle? T_ShowAIConfidence { get; set; }
         public AToggle? T_ShowTracers { get; set; }
+        public ADropdown? D_TracerPosition { get; set; }
         public AColorChanger? CC_DetectedPlayerColor { get; set; }
         public ASlider? S_DPFontSize { get; set; }
         public ASlider? S_DPCornerRadius { get; set; }

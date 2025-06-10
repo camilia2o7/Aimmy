@@ -418,7 +418,35 @@ namespace Aimmy2.Controls
                 })
                 .AddToggle("Show Detected Player", t => uiManager.T_ShowDetectedPlayer = t)
                 .AddToggle("Show AI Confidence", t => uiManager.T_ShowAIConfidence = t)
-                .AddToggle("Show Tracers", t => uiManager.T_ShowTracers = t)
+                .AddToggle("Show Tracers", t => uiManager.T_ShowTracers = t);
+
+            builder.AddDropdown("Tracer Position", d =>
+            {
+                d.DropdownBox.SelectedIndex = -1;
+                uiManager.D_TracerPosition = d;
+                _mainWindow.AddDropdownItem(d, "Bottom");
+                _mainWindow.AddDropdownItem(d, "Middle");
+                _mainWindow.AddDropdownItem(d, "Top");
+                d.DropdownBox.SelectionChanged += (s, e) =>
+                {
+                    if (Dictionary.toggleState["Show Detected Player"])
+                    {
+                        // simulate a click to turn it off - this is to force a reload of the ui cause tracer doesn't update otherwise - helz
+                        uiManager.T_ShowDetectedPlayer.Reader.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                        // simulate a click to turn it back on - same as before ^ - helz
+                        uiManager.T_ShowDetectedPlayer.Reader.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                    }
+                    else
+                    {
+                        if (Dictionary.DetectedPlayerOverlay != null)
+                        {
+                            Dictionary.DetectedPlayerOverlay.ForceReposition();
+                        }
+                    }
+                };
+            });
+
+            builder
                 .AddColorChanger("Detected Player Color", c =>
                 {
                     uiManager.CC_DetectedPlayerColor = c;
