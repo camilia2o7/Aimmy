@@ -1,4 +1,6 @@
-﻿using System.Management;
+﻿using System;
+using System.Management;
+using Vortice.DXGI;
 using Visuality;
 
 namespace Aimmy2.Class
@@ -11,6 +13,10 @@ namespace Aimmy2.Class
         {
             try
             {
+                if (HardwareClass == "Win32_VideoController" && Syntax == "Name")
+                {
+                    return GetActiveGpuName();
+                }
                 ManagementObjectSearcher SpecsSearch = new("root\\CIMV2", "SELECT * FROM " + HardwareClass);
                 foreach (ManagementObject MJ in SpecsSearch.Get().Cast<ManagementObject>())
                 {
@@ -22,6 +28,29 @@ namespace Aimmy2.Class
             {
                 new NoticeBar(e.Message, 10000).Show();
                 return "Not Found";
+            }
+        }
+        private static string GetActiveGpuName()
+        {
+            try
+            {
+                using var factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>();
+
+                for (uint i = 0; factory.EnumAdapters1(i, out IDXGIAdapter1 adapter).Success; i++)
+                {
+                    AdapterDescription1 desc = adapter.Description1;
+                    if ((desc.Flags & AdapterFlags.Software) == 0)
+                    {
+                        return desc.Description.Trim();
+                    }
+                }
+
+                return "GPU Not Found";
+            }
+            catch (Exception e)
+            {
+                new NoticeBar($"DXGI Error: {e.Message}", 10000).Show();
+                return "GPU Error";
             }
         }
     }
